@@ -454,6 +454,73 @@ class Companion:
             segs.append(seg_text(text[pos:]))
         return segs
 
+    # ------------------------------------------------------------ 查询命令
+    CMD_INTIMACY = ("查看好感度", "好感度排行", "好感度榜", "好感度多少")
+    CMD_MOOD = ("查看心情", "现在心情", "心情怎么样", "心情如何")
+
+    # 把内部好感度换算成 1-100 的展示分（按档位插值，看起来不会全是小数字）
+    _TIER_ANCHORS = ((0.0, 1.0), (40.0, 25.0), (120.0, 50.0), (300.0, 75.0), (700.0, 100.0))
+
+    @classmethod
+    def _intimacy_100(cls, raw: float) -> int:
+        pts = cls._TIER_ANCHORS
+        raw = max(0.0, float(raw or 0))
+        if raw <= pts[0][0]:
+            return 1
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            if raw <= x1:
+                return max(1, min(100, int(round(y0 + (y1 - y0) * (raw - x0) / (x1 - x0)))))
+        return 100
+
+    async def _cmd_mood(self, event) -> None:
+        chat_id = f"g{event.group_id}_u{event.user_id}" if event.group_id else f"u{event.user_id}"
+        _pid, _persona, mem = self._ctx(chat_id)
+        state = mood_mod.load((mem.get_state("__persona__") or {}).get("mood") or {})
+        v = float(state.get("valence", 0))
+        e = float(state.get("energy", 0.5))
+        say = "我现在" + ("挺开心的" if v > 0.4 else "心情还行" if v > 0.05 else "有点低落" if v > -0.4 else "挺难受的")
+        if e > 0.75:
+            say += "，精神也特别好"
+        elif e < 0.35:
+            say += "，就是有点没劲，想躺着"
+        else:
+            say += "，精神一般般"
+        say += f"\n（情绪值 {v:.2f}｜精力 {e:.2f}，满分都是 1）"
+        await self.bot.reply(event, self._compose(say, getattr(event, "group_id", None)))
+
+    async def _cmd_intimacy(self, event) -> None:
+        gid = event.group_id
+        chat_id = f"g{gid}_u{event.user_id}" if gid else f"u{event.user_id}"
+        _pid, _persona, mem = self._ctx(chat_id)
+        if not gid:
+            raw = float(mem.kv_get(chat_id, "intimacy", "") or 0)
+            await self.bot.reply(
+                event,
+                self._compose(
+                    f"我对你的好感度：{self._intimacy_100(raw)}（{life_mod.tier_of(raw)[0]}，满分 100）",
+                    getattr(event, "group_id", None),
+                ),
+            )
+            return
+        roster = await self._ensure_roster(gid)
+        qq2name: dict[str, str] = {}
+        for name, qq in roster.items():
+            qq2name.setdefault(qq, name)
+        ids = set(qq2name)
+        ids |= {c.split("_u", 1)[1] for c in mem.known_chats(400) if c.startswith(f"g{gid}_u")}
+        rows = []
+        for uid in ids:
+            raw = float(mem.kv_get(f"g{gid}_u{uid}", "intimacy", "") or 0)
+            rows.append((self._intimacy_100(raw), qq2name.get(uid, f"QQ{uid}"), life_mod.tier_of(raw)[0]))
+        rows.sort(key=lambda r: (-r[0], r[1]))
+        if not rows:
+            await self.bot.reply(event, "还没跟群里的人聊过呢，都是刚认识~")
+            return
+        lines = ["本群好感度（满分 100）"]
+        for i, (score, name, tier) in enumerate(rows[:20], 1):
+            lines.append(f"{i}. {name}  {score}  ·{tier}")
+        await self.bot.reply(event, chr(10).join(lines))
+
     async def _send_text(self, event, text: str, limit: int | None = None, typing_scale: float = 1.0) -> None:
         gap = (self.cfg.get("split") or {}).get("gap_ms") or [500, 1500]
         segs = self._split(text, limit=limit)
@@ -707,6 +774,22 @@ class Companion:
         self.refresh()
         if not self.cfg.get("enabled") or not self._allowed(event):
             return False
+
+        # 关键词查询：不受「@ 才回」和概率限制，说了就答
+        probe = (event.command_text or event.message or "").strip()
+        if probe:
+            if any(k in probe for k in self.CMD_INTIMACY):
+                try:
+                    await self._cmd_intimacy(event)
+                except Exception as exc:
+                    log.warning("好感度查询失败：%r", exc)
+                return True
+            if any(k in probe for k in self.CMD_MOOD):
+                try:
+                    await self._cmd_mood(event)
+                except Exception as exc:
+                    log.warning("心情查询失败：%r", exc)
+                return True
 
         # 先顺手把别人发的图存进表情包库（不花钱、不费 token）
         stolen = None

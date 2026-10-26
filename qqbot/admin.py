@@ -134,11 +134,13 @@ PAGE = r"""<!doctype html>
 
 <script>
 let CFG = {};
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const A = (u) => u + (TOKEN ? (u.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : '');
 const $ = id => document.getElementById(id);
 const toast = (m) => { const t=$('toast'); t.textContent=m; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); };
 
 async function load() {
-  const r = await fetch('/admin/config'); CFG = await r.json();
+  const r = await fetch(A('/admin/config')); CFG = await r.json();
   const a = CFG.autoreply || {}, llm = a.llm || {}, ty = a.typing || {}, sp = a.split || {};
   $('enabled').checked = !!a.enabled; $('cooldown').value = a.cooldown ?? 2;
   $('reply_private').checked = !!a.reply_private; $('reply_group').checked = !!a.reply_group;
@@ -150,7 +152,7 @@ async function load() {
   $('api_key').value = llm.api_key || ''; $('model').value = llm.model || '';
   $('temperature').value = llm.temperature ?? 0.95; $('history').value = llm.history ?? 10;
   $('persona').value = llm.persona || '';
-  const st = await (await fetch('/status')).json();
+  const st = await (await fetch(A('/status'))).json();
   const s = $('status');
   s.textContent = st.connected ? '已连接 QQ' : '未连接';
   s.className = 'badge' + (st.connected ? ' on' : '');
@@ -173,7 +175,7 @@ function collect() {
 }
 
 async function save() {
-  const r = await fetch('/admin/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({autoreply: collect()})});
+  const r = await fetch(A('/admin/save'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({autoreply: collect()})});
   const d = await r.json();
   if (d.ok) { CFG.autoreply = collect(); $('saved').textContent = '已保存 ' + new Date().toLocaleTimeString(); toast('已保存，立即生效'); }
   else toast('保存失败: ' + (d.error||''));
@@ -181,7 +183,7 @@ async function save() {
 
 async function loadModels() {
   $('testout').textContent = '拉取中…';
-  const r = await fetch('/admin/models'); const d = await r.json();
+  const r = await fetch(A('/admin/models')); const d = await r.json();
   if (!d.ok) { $('testout').textContent = '拉取失败: ' + (d.error||''); return; }
   const dl = $('models'); dl.innerHTML = '';
   d.models.forEach(m => { const o = document.createElement('option'); o.value = m; dl.appendChild(o); });
@@ -190,7 +192,7 @@ async function loadModels() {
 
 async function testChat() {
   $('testout').textContent = '生成中…';
-  const r = await fetch('/admin/test', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text: $('testin').value, autoreply: collect()})});
+  const r = await fetch(A('/admin/test'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text: $('testin').value, autoreply: collect()})});
   const d = await r.json();
   $('testout').textContent = d.ok ? (d.reply || '(空回复)') + `\n\n— ${d.model} · ${d.ms}ms` : '出错: ' + (d.error||'');
 }

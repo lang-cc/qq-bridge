@@ -234,13 +234,52 @@ fi
 
 "$ROOT/.venv/bin/python" autoconfig.py --ticket ticket.yaml || die "配置生成失败"
 
-# ---------- 7. 启动 ----------
-step "7/7 启动机器人服务"
-pkill -f "/opt/qqbridge/main.py" 2>/dev/null || true
+# ---------- 7. 启动（systemd 托管，避免多实例抢端口） ----------
+step "7/7 用 systemd 启动机器人服务"
+cat > /etc/systemd/system/qqbridge.service <<UNIT
+[Unit]
+Description=qq-bridge QQ bot
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+Environment=TMPDIR=$ROOT/tmp
+ExecStart=$ROOT/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=append:$ROOT/logs/qq-bridge.log
+StandardError=append:$ROOT/logs/qq-bridge.log
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/qqbridge-watchdog.service <<UNIT
+[Unit]
+Description=qq-bridge watchdog
+After=qqbridge.service docker.service
+Wants=qqbridge.service
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+ExecStart=$ROOT/.venv/bin/python scripts/watch_linux.py
+Restart=always
+RestartSec=15
+StandardOutput=append:$ROOT/logs/watchdog.log
+StandardError=append:$ROOT/logs/watchdog.log
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+mkdir -p "$ROOT/tmp"
+pkill -9 -f "main.py" 2>/dev/null || true
 sleep 2
-nohup "$ROOT/.venv/bin/python" main.py >> "$ROOT/logs/qq-bridge.log" 2>&1 &
-echo $! > "$ROOT/qqbridge.pid"
-sleep 8
+systemctl daemon-reload
+systemctl enable --now qqbridge qqbridge-watchdog
+systemctl restart qqbridge
+sleep 12
 "$ROOT/.venv/bin/python" - <<'PY'
 import json, urllib.request
 try:

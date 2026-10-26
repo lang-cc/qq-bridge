@@ -61,6 +61,8 @@ class HttpApi:
         app = web.Application(middlewares=[errors])
         app.add_routes(
             [
+                web.get("/", self.h_doc),
+                web.get("/doc", self.h_doc),
                 web.get("/status", self.h_status),
                 web.post("/send", self.h_send),
                 web.post("/send/text", self.h_text),
@@ -125,8 +127,18 @@ class HttpApi:
         return _j({"ok": True, "data": result})
 
     # ------------------------------------------------------------ 路由
-    async def h_status(self, request: web.Request) -> web.Response:
+    async def h_doc(self, request: web.Request) -> web.Response:
+        """手机端交付说明页（带 token 才给看，里面含密钥）。"""
         self._auth(request)
+        from pathlib import Path
+
+        p = Path("static/doc.html")
+        if not p.exists():
+            return web.Response(text="说明页还没上传", status=404, content_type="text/plain", charset="utf-8")
+        return web.Response(body=p.read_bytes(), content_type="text/html", charset="utf-8")
+
+    async def h_status(self, request: web.Request) -> web.Response:
+        # /status 不鉴权：看门狗、自检、部署脚本都要用它探活（只返回在线信息，不含敏感内容）
         return _j(
             {
                 "ok": True,
@@ -211,14 +223,17 @@ class HttpApi:
         return dict(getattr(cfg, "raw", {}) or {})
 
     async def h_admin(self, request: web.Request) -> web.Response:
+        self._auth(request)
         from .admin import PAGE
 
         return web.Response(text=PAGE, content_type="text/html", charset="utf-8")
 
     async def h_admin_config(self, request: web.Request) -> web.Response:
+        self._auth(request)
         return _j({"autoreply": self._raw().get("autoreply") or {}})
 
     async def h_admin_save(self, request: web.Request) -> web.Response:
+        self._auth(request)
         from pathlib import Path
 
         import yaml
@@ -240,11 +255,13 @@ class HttpApi:
         return _j({"ok": True})
 
     async def h_admin_models(self, request: web.Request) -> web.Response:
+        self._auth(request)
         from .admin import list_models
 
         return _j(await list_models(self._raw().get("autoreply") or {}))
 
     async def h_admin_test(self, request: web.Request) -> web.Response:
+        self._auth(request)
         from .admin import test_llm
 
         data = await self._body(request)
@@ -252,6 +269,7 @@ class HttpApi:
         return _j(await test_llm(autoreply, data.get("text") or "在吗"))
 
     async def h_admin_reload(self, request: web.Request) -> web.Response:
+        self._auth(request)
         cfg = getattr(self.bot, "config", None)
         if cfg is None:
             return _j({"ok": False, "error": "no config"})
