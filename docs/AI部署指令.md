@@ -50,11 +50,18 @@ QQ号：____
 
 ## 第 1 步 · 拿到代码
 
-优先用本机已有的安装包（最常见的路径：安装包和本任务单一起发过来，就放在 D 盘根目录）：
+**这个项目可以从公网直接下载（无需登录）**：`https://gitee.com/wangcc111/qq-bridge-dist/releases/download/v1.0/qq-bridge-full.zip`（约 34MB，已内含 NapCat 协议端）。
 
 ```powershell
+# 情况 A：本机已有安装包（D 盘根目录 / 下载目录）→ 直接用
 $zip = (Get-ChildItem D:\, C:\Users\$env:USERNAME\Downloads -Filter "qq-bridge*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-if (-not $zip) { throw "没找到 qq-bridge.zip" }
+
+# 情况 B：没有就下载
+if (-not $zip) {
+    $zip = "D:\qq-bridge-full.zip"
+    Invoke-WebRequest -Uri "https://gitee.com/wangcc111/qq-bridge-dist/releases/download/v1.0/qq-bridge-full.zip" -OutFile $zip -UseBasicParsing -TimeoutSec 600
+}
+
 Expand-Archive -Path $zip -DestinationPath "D:\" -Force
 $src = (Get-ChildItem D:\ -Directory | Where-Object { $_.Name -like "qq-bridge*" } | Select-Object -First 1).FullName
 if ($src -ne "D:\qqbridge") { if (Test-Path D:\qqbridge) { Remove-Item D:\qqbridge -Recurse -Force }; Rename-Item $src "D:\qqbridge" }
@@ -63,7 +70,7 @@ Set-Location D:\qqbridge
 
 判据：`Test-Path D:\qqbridge\main.py` 为 True，且 `D:\qqbridge\qqbot` 存在。
 
-失败怎么办：没有 zip → 停下来告诉对方「请把 qq-bridge.zip 放到这台电脑的 D 盘根目录，然后回复我继续」。有下载链接时可用 `Invoke-WebRequest -Uri "<链接>" -OutFile D:\qq-bridge.zip` 再重复上面步骤。
+失败怎么办：Gitee 下载失败/超时 → 让操作员用浏览器打开 `https://gitee.com/wangcc111/qq-bridge-dist` 手动下载 `qq-bridge-full.zip` 放到 `D:\`，然后重复上面 `Expand-Archive` 之后的命令。
 
 ## 第 2 步 · 装环境（一条命令）
 
