@@ -47,6 +47,7 @@ def _attach_nonebot_file_log() -> None:
     logs.mkdir(exist_ok=True)
     nb_logger.add(
         str(logs / "nonebot.log"),
+        level="INFO",  # 文件里只留 INFO 以上，免得 DEBUG 把日志撑爆
         rotation="10 MB",
         retention=5,
         encoding="utf-8",
