@@ -84,7 +84,8 @@ if (Test-Path (Join-Path $napcat "napcat.mjs")) {
     # 优先用同目录自带的包（完全离线可用）
     $localPkg = Join-Path $root "NapCat.Shell.zip"
     if (Test-Path $localPkg) { $sources += $localPkg }
-    # 其次 Gitee（国内直连，不用翻墙）
+    # 其次 Gitee 发行版直链（国内直连、无需登录）
+    $sources += "https://gitee.com/wangcc111/qq-bridge-dist/releases/download/v1.0/NapCat.Shell.zip"
     $sources += "https://gitee.com/wangcc111/qq-bridge-dist/raw/main/NapCat.Shell.zip"
     # 再试 GitHub 加速镜像
     $sources += "https://ghproxy.net/https://github.com/NapNeko/NapCatQQ/releases/latest/download/NapCat.Shell.zip"
