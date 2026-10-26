@@ -8,23 +8,45 @@
 ## 一、一条命令装完（远程代装首选）
 
 前提：机器上已经有 Python 3.10+（没有也行，脚本会用 winget 装）；
-远程用 ToDesk / 向日葵 / RDP 连上客户电脑后，把 `qq-bridge-full.zip` 传过去，然后：
+远程用 ToDesk / 向日葵 / RDP 连上客户电脑后，把 `qq-bridge-full.zip` 传过去、解压成安装目录，然后：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File deploy.ps1 -ZipPath D:\qq-bridge-full.zip `
-    -Qq 10001 `
-    -Users 20002 `
-    -BaseUrl https://api.deepseek.com/v1 `
-    -ApiKey sk-你的密钥 `
-    -Model deepseek-chat `
-    -PersonaName 小柚 -PersonaAge 20 `
-    -PersonaWho "在奶茶店做兼职" `
-    -PersonaStyle "短句、口语，爱用「呀」「啦」" `
-    -PersonaRelation "高中同学，最近刚重新联系上" `
-    -City 杭州
+Expand-Archive -Path D:\qq-bridge-full.zip -DestinationPath D:\qqbridge -Force
+cd D:\qqbridge
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 `
+    -InstallDir D:\qqbridge `
+    -TicketPath D:\ticket.yaml
 ```
 
-> 已经解压过的话，进到解压目录执行：`powershell -ExecutionPolicy Bypass -File scripts\remote-deploy.ps1 -Qq ...`（去掉 `-ZipPath`）。
+`ticket.yaml`（工单，含 QQ 号 / 白名单 / 模型三项 / 人格，模板见 `ticket.example.yaml`）：
+
+```yaml
+robot:
+  qq: "10001"
+allow:
+  users: ["20002"]
+  groups: []
+city: "杭州"
+api:
+  base_url: "https://api.deepseek.com/v1"
+  api_key: "sk-你的密钥"
+  model: "deepseek-chat"
+persona:
+  name: "小柚"
+  age: 20
+  prompt: |
+    你是小柚，20 岁，在街角那家奶茶店做兼职……
+```
+
+不想写工单也可以把参数直接丢命令行（人格短的时候够用）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy.ps1 -Qq 10001 -Users 20002 `
+    -BaseUrl https://api.deepseek.com/v1 -ApiKey sk-xxx -Model deepseek-chat `
+    -PersonaName 小柚 -PersonaAge 20 -PersonaWho "在奶茶店做兼职" -City 杭州
+```
+
+> 也可以一步到位让它自己解压：`powershell -ExecutionPolicy Bypass -File deploy.ps1 -ZipPath D:\qq-bridge-full.zip -TicketPath D:\ticket.yaml -InstallDir D:\qqbridge`（前提是手上已有 `deploy.ps1`）。
 
 脚本会自己做完这些（幂等，重复跑不会重复下载、不覆盖已有配置和数据）：
 

@@ -320,6 +320,20 @@ print('ports ok')
 if ($LASTEXITCODE -ne 0) { Die "写端口失败" }
 Ok "端口：反向 WS $Port / 本机接口 $ApiPort"
 
+# 用 -TicketPath 时命令行没给 Qq/Users，报告里从生成的配置回读，免得显示空白
+if (-not $Qq -or -not $Users) {
+    $readback = & $vpy -c @"
+import yaml
+d = yaml.safe_load(open(r'$InstallDir\config.yaml', encoding='utf-8')) or {}
+w = ((d.get('autoreply') or {}).get('whitelist') or {})
+print(str(d.get('bot_qq') or '') + '|' + ','.join(w.get('users') or []) + '|' + ','.join(w.get('groups') or []))
+"@
+    $parts = "$readback".Split('|')
+    if (-not $Qq) { $Qq = $parts[0] }
+    if (-not $Users) { $Users = $parts[1] }
+    if ($parts.Length -gt 2 -and $parts[2]) { $Groups = $parts[2] }
+}
+
 # nb.env 由 main_nb.py 首次启动自动生成；这里先生成一份，方便 -NoStart 场景
 & $vpy -c @"
 import sys

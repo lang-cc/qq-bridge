@@ -55,9 +55,9 @@
 
 # ③ 情况 A：Windows 本地部署（机器人跑在这台电脑上）
 
-## A1 · 拿到安装包
+## A1 · 拿到安装包并解压
 
-安装包：`qq-bridge-full.zip`（约 59MB，已内含 NapCat 协议端与表情包）。
+安装包：`qq-bridge-full.zip`（约 59MB，已内含 NapCat 协议端与表情包；解压出来就是安装目录）。
 
 ```powershell
 $zip = (Get-ChildItem D:\, "$env:USERPROFILE\Downloads", "$env:USERPROFILE\Desktop" -Filter "qq-bridge*.zip" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
@@ -66,13 +66,18 @@ if (-not $zip) {
     Invoke-WebRequest -Uri "https://gitee.com/wangcc111/qq-bridge-dist/releases/download/v2.0/qq-bridge-full.zip" -OutFile $zip -UseBasicParsing -TimeoutSec 600
 }
 Write-Host "包：$zip   $([math]::Round((Get-Item $zip).Length/1MB,1)) MB"
+
+# 直接解压成安装目录（zip 内没有多余一层文件夹）
+Expand-Archive -Path $zip -DestinationPath D:\qqbridge -Force
+Test-Path D:\qqbridge\deploy.ps1        # 必须是 True
 ```
 
-**判据**：打印出的文件存在且 > 30MB。
+**判据**：`D:\qqbridge\deploy.ps1`、`D:\qqbridge\main_nb.py`、`D:\qqbridge\nb` 三者都存在。
 
 **失败怎么办**：
-- 下载 404 / 超时 → 让操作员用浏览器打开 `https://gitee.com/wangcc111/qq-bridge-dist` 手动下载 `qq-bridge-full.zip` 放到 `D:\`，然后重跑上面的 `$zip` 判断。
-- 机器没有 D 盘 → 全程换成 `C:\`，安装目录用 `C:\qqbridge`。
+- 下载 404 / 超时 → 让操作员用浏览器打开 `https://gitee.com/wangcc111/qq-bridge-dist` 手动下载 `qq-bridge-full.zip` 放到 `D:\`，再执行上面的 `$zip` / `Expand-Archive` 两段。
+- 机器没有 D 盘 → 全程换成 `C:\qqbridge`。
+- `Expand-Archive` 报「路径太长」→ 改用 `tar -xf $zip -C D:\qqbridge`（Win10+ 自带 tar）。
 
 ## A2 · 写工单（含人格）
 
@@ -88,7 +93,7 @@ allow:
     - "①里的私聊QQ号"
     - "有多个就多写几行"
   groups:
-    - "①里的群号（没有就写 [] 这一行删掉）"
+    - "①里的群号（没有就把 groups 整段删掉）"
 
 city: "①里的城市"          # 没填就留 ""
 
@@ -109,16 +114,15 @@ persona:
 ## A3 · 一条命令装完
 
 ```powershell
-$zip = "D:\qq-bridge-full.zip"      # A1 得到的路径
-powershell -NoProfile -ExecutionPolicy Bypass -File deploy.ps1 -ZipPath $zip -InstallDir D:\qqbridge -TicketPath D:\ticket.yaml
+cd D:\qqbridge
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -InstallDir D:\qqbridge -TicketPath D:\ticket.yaml
 ```
 
-> 如果解压后已经在目录里（`D:\qqbridge\deploy.ps1` 存在），改成：
-> `cd D:\qqbridge; powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -InstallDir D:\qqbridge -TicketPath D:\ticket.yaml`
+（`deploy.ps1` 是薄壳，真正的逻辑在 `scripts\remote-deploy.ps1`，参数完全一样。）
 
-它会依次做（幂等，可重复跑）：解压 → 找/装 Python 3.12 → 建 `.venv` → 装依赖（官方源失败自动切清华/阿里云镜像）
+它会依次做（幂等，可重复跑）：找/装 Python 3.12 → 建 `.venv` → 装依赖（官方源失败自动切清华/阿里云镜像）
 → 下载并解压 NapCat → 按工单生成 `config.yaml` + `data\personas.yaml` → 生成 `nb.env` → 建桌面图标
-→ 启动服务 → 轮询 `/status` → 打印报告。
+→ 启动服务 → 轮询 `/status` → 打印验收报告。
 
 **判据**（报告末尾应出现）：
 
