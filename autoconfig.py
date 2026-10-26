@@ -206,9 +206,17 @@ def main(argv=None) -> int:
         ar["group_reply_probability"] = float(group_cfg.get("probability") or 1.0)
     pro = ar.setdefault("proactive", {})
     targets = [f"u{u}" for u in users] + [f"g{g}" for g in groups]
-    pro.update({"enabled": bool(tuning.get("proactive_min_minutes", 1)),
+    # 主动开聊默认：有私聊对象才开；纯群聊默认关（群里主动说话容易冷场或被嫌）
+    raw_min = tuning.get("proactive_min_minutes")
+    if raw_min is None:
+        pro_enabled = bool(users)
+        pro_minutes = 45
+    else:
+        pro_enabled = bool(int(raw_min))
+        pro_minutes = int(raw_min) or 45
+    pro.update({"enabled": pro_enabled,
                 "targets": targets,
-                "min_minutes": int(tuning.get("proactive_min_minutes") or 45),
+                "min_minutes": pro_minutes,
                 "max_minutes": int(tuning.get("proactive_max_minutes") or 180),
                 "max_per_day": int(tuning.get("proactive_max_per_day") or 6)})
     ar.setdefault("care", {})["city"] = str(ticket.get("city") or "").strip()
