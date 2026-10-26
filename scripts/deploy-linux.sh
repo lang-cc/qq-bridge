@@ -10,7 +10,7 @@
 set -uo pipefail
 
 ROOT=/opt/qqbridge
-PKG_URL="https://gitee.com/wangcc111/qq-bridge-dist/releases/download/v1.0/qq-bridge-full.zip"
+CODE_URL="https://gitee.com/wangcc111/qq-bridge-dist/releases/download/v1.0/qq-bridge-code.zip"
 PIP_MIRROR="https://mirrors.aliyun.com/pypi/simple/"
 STAGE="${STAGE:-all}"
 SWAP_GB="${SWAP_GB:-2}"
@@ -50,10 +50,10 @@ apt-get install -y -qq python3 python3-venv python3-pip unzip curl ca-certificat
 ok "依赖就绪（含中文字体）"
 
 # ---------- 2. 代码 ----------
-step "2/7 下载并解压代码（34MB）"
+step "2/7 下载并解压代码（250KB）"
 mkdir -p /opt
 tmp=$(mktemp -d)
-curl -fsSL --retry 3 --max-time 900 -o "$tmp/pkg.zip" "$PKG_URL" || die "下载失败（检查能否访问 gitee.com）"
+curl -fsSL --retry 3 --max-time 300 -o "$tmp/pkg.zip" "$CODE_URL" || die "下载失败（检查能否访问 gitee.com）"
 unzip -q "$tmp/pkg.zip" -d "$tmp/x" || die "解压失败"
 inner=$(find "$tmp/x" -maxdepth 1 -mindepth 1 -type d | head -1)
 if [ -d "$ROOT" ]; then
