@@ -1,0 +1,49 @@
+# 机密与本地数据（绝对不要提交）
+config.yaml
+data/personas.yaml
+data/personas/
+data/*.db
+data/browser-*/
+data/*.bak*
+tmp/
+logs/
+*.log
+*.log.*
+
+# 运行环境
+.venv/
+.venv-*/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 第三方与素材（体积大 / 有各自许可）
+napcat/
+stickers/
+tools/silk/node_modules/
+tools/silk/*.mp3
+tools/silk/*.silk
+tools/silk/*.pcm
+
+# 桌面/系统
+Thumbs.db
+desktop.ini
+
+# 工单里有客户私人信息
+ticket.yaml
+out-*.yaml
+data/backups/
+.cache/
+backups/
+tools/ffmpeg/
+tools/dl/
+*.zip
+bilibili_video_screenshot.png
+*.png
+!assets/*.png
+!docs/*.png
+
+*.bak
+config.yaml.bak
+
+dist/

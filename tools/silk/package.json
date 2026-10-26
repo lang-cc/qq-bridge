@@ -1,0 +1,10 @@
+{
+  "name": "qq-bridge-silk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "把 PCM 编码成 QQ 语音用的 silk",
+  "dependencies": {
+    "silk-wasm": "^3.7.1"
+  }
+}

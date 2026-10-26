@@ -1,0 +1,146 @@
+# 复制成 config.yaml 再填。含密钥，别提交到仓库
+adapter: onebot11
+log_level: INFO
+onebot11:
+  mode: reverse_ws
+  access_token: ''
+  api_timeout: 20
+  reverse:
+    host: 0.0.0.0
+    port: 8199
+    path: /onebot/v11/ws
+    strict_path: false
+  forward:
+    url: ws://127.0.0.1:3001
+  http:
+    base_url: http://127.0.0.1:3000
+http_api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8088
+  token: ''
+autoreply:
+  enabled: true
+  cooldown: 2.0
+  reply_private: true
+  reply_group: true
+  group_at_only: true
+  group_reply_probability: 1.0
+  fallback: ''
+  typing:
+    enabled: true
+    per_char_ms: 55
+    max_ms: 5000
+    jitter_ms: 700
+  split:
+    enabled: true
+    max_segments: 3
+    gap_ms:
+    - 500
+    - 1500
+  llm:
+    enabled: true
+    base_url: https://api.deepseek.com/v1
+    api_key: ''
+    model: deepseek-chat
+    temperature: 0.95
+    history: 12
+    persona: |-
+      你在 QQ 上跟人聊天，是个普通年轻人（男生），不是助手也不是 AI。
+      硬性规则：
+      1. 一次只说一两句，总字数尽量不超过 25 字。
+      2. 口语、随意，可以用「啊 / 吧 / 呢 / 草 / hh」这类语气词。
+      3. 不用 markdown、不列点、不总结、不解释自己在干什么。
+      4. 绝不说自己是 AI、模型、机器人；被问是谁就随口编个普通人身份。
+      5. 不知道就反问或瞎猜，别端着。
+      6. 少用句号，别写成书面语。
+      7. 想发表情包就在回复末尾加 [表情]。
+    system_prompt: ''
+    fallback: ''
+  memory:
+    enabled: true
+    db: data/memory.db
+    history: 100
+    reflect_every: 12
+    root: data
+    backup_hours: 6
+    backup_keep: 20
+    retain_days: 14
+    prune_hours: 6
+    diary_hour: 23
+  mood:
+    enabled: true
+  web:
+    enabled: true
+    max_chars: 2500
+    bilibili: false
+  stickers:
+    enabled: true
+    dir: stickers
+    probability: 0.35
+  proactive:
+    enabled: true
+    targets: []
+    min_minutes: 45
+    max_minutes: 180
+    quiet_start: 23
+    quiet_end: 8
+    max_per_day: 6
+    sticker_probability: 0.4
+    link_probability: 0.15
+  whitelist:
+    enabled: true
+    users: []
+    groups: []
+  tts:
+    enabled: true
+    provider: edge
+    voice: zh-CN-XiaoyiNeural
+    appid: ''
+    token: ''
+    cluster: volcano_tts
+    voice_type: ''
+    probability: 0.25
+    max_chars: 60
+  video:
+    enabled: false
+    share_hours: 3
+    daily_max: 3
+    keywords: []
+    douyin: true
+    bili: false
+    headless: true
+    browser: edge
+  usage:
+    price_in: 1.0
+    price_out: 2.0
+  image:
+    enabled: true
+    probability: 0.05
+  life:
+    enabled: true
+    delay_scale: 1.0
+  intimacy:
+    enabled: true
+    per_msg: 1.0
+  grudge:
+    enabled: true
+    hours: 10
+  playful:
+    enabled: true
+    typo_chance: 0.05
+    read_delay_chance: 0.06
+  care:
+    enabled: true
+    city: ''
+    morning:
+    - 7
+    - 10
+    evening:
+    - 20
+    - 23
+official:
+  app_id: ''
+  app_secret: ''
+  intents: 33554432
+  sandbox: false

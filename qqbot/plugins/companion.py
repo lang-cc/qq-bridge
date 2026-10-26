@@ -1,0 +1,1284 @@
+"""拟人陪聊引擎（多人格 + 长期记忆 + 心情 + 上网 + 表情包 + 主动开聊 + 记忆备份）。
+
+每个人格独立记忆库（data/personas/<id>/memory.db），会话可单独绑定人格：
+  「人格」             看有哪些人格、当前是哪个
+  「切换人格 阿糖」    这个会话换成人格阿糖
+  「记忆」             看当前人格记得你什么
+  「备份记忆」         立刻备份
+  「恢复记忆 文件名」   从备份还原
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import random
+import re
+import time
+from datetime import datetime
+
+from .. import life as life_mod
+from .. import mood as mood_mod
+from .. import web_tools
+from ..message import face as seg_face
+from ..message import image as seg_image
+from ..message import link as seg_link
+from ..message import record as seg_record
+from ..personas import PersonaStore
+from ..stickers import Stickers, random_face
+
+log = logging.getLogger("qqbot.companion")
+
+ENGINE = None  # setup() 里赋值，供 HTTP 接口触发分享等动作
+
+DEFAULTS = {
+    "enabled": True,
+    "cooldown": 2.0,
+    "reply_private": True,
+    "reply_group": True,
+    "group_at_only": True,
+    "group_reply_probability": 1.0,
+    "fallback": "",
+    "typing": {"enabled": True, "per_char_ms": 55, "max_ms": 5000, "jitter_ms": 700},
+    "split": {"enabled": True, "max_segments": 3, "gap_ms": [500, 1500]},
+    "llm": {
+        "enabled": False,
+        "base_url": "https://api.deepseek.com",
+        "api_key": "",
+        "model": "deepseek-chat",
+        "persona": (
+            "你在 QQ 上跟人聊天，不是助手也不是 AI。"
+            "说话短、口语、有情绪；一次只说一两句；不用 markdown；绝不说自己是 AI。"
+        ),
+        "system_prompt": "",
+        "temperature": 0.95,
+        "history": 12,
+    },
+    "memory": {
+        "enabled": True,
+        "root": "data",
+        "history": 14,
+        "reflect_every": 12,
+        "backup_hours": 6,
+        "backup_keep": 20,
+        "retain_days": 14,
+        "prune_hours": 6,
+    },
+    "mood": {"enabled": True},
+    "whitelist": {"enabled": True, "users": [], "groups": []},
+    "web": {"enabled": True, "max_chars": 2500, "bilibili": True},
+    "image": {"enabled": True, "probability": 0.05},
+    "stickers": {"enabled": True, "dir": "stickers", "probability": 0.35, "steal": True},
+    "tts": {
+        "enabled": True,
+        "provider": "edge",
+        "voice": "zh-CN-XiaoyiNeural",
+        "appid": "",
+        "token": "",
+        "cluster": "volcano_tts",
+        "voice_type": "",
+        "probability": 0.22,
+        "max_chars": 60,
+    },
+    "video": {"enabled": True, "share_hours": 3, "daily_max": 3, "keywords": []},
+    "proactive": {
+        "enabled": False,
+        "targets": [],
+        "min_minutes": 45,
+        "max_minutes": 180,
+        "quiet_start": 23,
+        "quiet_end": 8,
+        "max_per_day": 6,
+        "sticker_probability": 0.4,
+        "link_probability": 0.15,
+    },
+}
+
+VIDEO_HINTS = ("视频", "b站", "bilibili", "抖音", "看看", "推荐个", "有什么好看的", "追剧", "番")
+HOT_HINTS = ("热门", "热搜", "最近火", "排行榜")
+SEARCH_HINTS = ("搜一下", "查一下", "是什么", "为什么", "怎么了", "真的假的", "新闻")
+
+REFLECT_PROMPT = """下面是你和对方的最近对话。请总结并只输出 JSON（不要代码块、不要解释）：
+{"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"]}
+traits 取 0-1，表示你目前的性格倾向。important 只放真正重要的事（约定、家人、健康、重要日期、矛盾与和解），没有就给空数组。"""
+
+
+def _merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for k, v in (override or {}).items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+class _Shell:
+    """给主动消息用的轻量事件壳（只需要 group_id / user_id）。"""
+
+    def __init__(self, group_id=None, user_id=None) -> None:
+        self.group_id = group_id
+        self.user_id = user_id
+
+
+class Companion:
+    def __init__(self, bot, cfg: dict | None = None) -> None:
+        self.bot = bot
+        self.cfg = _merge(DEFAULTS, cfg or {})
+        self._last: dict[str, float] = {}
+        self._session = None
+        self._store: PersonaStore | None = None
+        self._stickers: Stickers | None = None
+        self._task = None
+        self._backup_task = None
+        self._prune_task = None
+        self._video_task = None
+        self._diary_task = None
+        self._usage = None
+        self._video_today: dict[str, int] = {}
+        self._sent_today: dict[str, int] = {}
+        self._day = time.strftime("%Y-%m-%d")
+
+    # ------------------------------------------------------------ 配置/资源
+    def refresh(self) -> None:
+        cfg = getattr(self.bot, "config", None)
+        if cfg is None:
+            return
+        try:
+            self.cfg = _merge(DEFAULTS, cfg.section("autoreply"))
+        except Exception as exc:
+            log.debug("重载配置失败：%r", exc)
+
+    @property
+    def store(self) -> PersonaStore:
+        if self._store is None:
+            root = (self.cfg.get("memory") or {}).get("root") or "data"
+            self._store = PersonaStore(root)
+            self._migrate_legacy(root)
+        return self._store
+
+    @property
+    def stickers(self) -> Stickers:
+        if self._stickers is None:
+            self._stickers = Stickers((self.cfg.get("stickers") or {}).get("dir") or "stickers")
+        return self._stickers
+
+    @property
+    def usage(self):
+        if self._usage is None:
+            from ..usage import Usage
+
+            self._usage = Usage("data/usage.db")
+        return self._usage
+
+    def _migrate_legacy(self, root: str) -> None:
+        """旧版单库 data/memory.db 迁移给默认人格，老记忆不丢。"""
+        legacy = __import__("pathlib").Path(root) / "memory.db"
+        if not legacy.exists() or legacy.stat().st_size == 0:
+            return
+        pid = self._store.active_id()
+        target = self._store.memory_path(pid)
+        if target.exists() and target.stat().st_size > 0:
+            return
+        try:
+            import shutil
+
+            shutil.copyfile(legacy, target)
+            log.info("已把旧记忆库迁移到人格 %s", pid)
+        except Exception as exc:
+            log.warning("迁移旧记忆失败：%r", exc)
+
+    def _ctx(self, chat_id: str) -> tuple[str, dict, object]:
+        """返回 (人格id, 人格定义, 该人格的记忆库)"""
+        pid = self.store.chat_persona(chat_id)
+        persona = self.store.get(pid) or {"id": pid, "name": pid, "prompt": ""}
+        return pid, persona, self.store.memory(pid)
+
+    def _llm_ready(self) -> bool:
+        llm = self.cfg.get("llm") or {}
+        if not llm.get("enabled"):
+            return False
+        base = str(llm.get("base_url") or "")
+        return bool(llm.get("api_key")) or any(h in base for h in ("127.0.0.1", "localhost"))
+
+    # ------------------------------------------------------------ 模型调用
+    async def _chat(
+        self,
+        messages: list[dict],
+        temperature: float | None = None,
+        kind: str = "reply",
+        persona: str = "",
+        chat_id: str = "",
+    ) -> str:
+        import aiohttp
+
+        llm = self.cfg.get("llm") or {}
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        body = {
+            "model": llm.get("model") or "",
+            "messages": messages,
+            "temperature": float(temperature if temperature is not None else (llm.get("temperature") or 0.95)),
+        }
+        headers = {"Content-Type": "application/json"}
+        if llm.get("api_key"):
+            headers["Authorization"] = f"Bearer {llm['api_key']}"
+        url = str(llm.get("base_url") or "").rstrip("/") + "/chat/completions"
+        try:
+            async with self._session.post(url, json=body, headers=headers, timeout=120) as r:
+                data = await r.json(content_type=None)
+        except Exception as exc:
+            log.error("模型调用失败：%r", exc)
+            return ""
+
+        ucfg = self.cfg.get("usage") or {}
+        try:
+            self.usage.record(
+                kind=kind,
+                model=body["model"],
+                usage=data.get("usage") or {},
+                persona=persona,
+                chat_id=chat_id,
+                price_in=float(ucfg.get("price_in") or 1.0),
+                price_out=float(ucfg.get("price_out") or 2.0),
+            )
+        except Exception as exc:
+            log.debug("用量记录失败：%r", exc)
+
+        return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+    # ------------------------------------------------------------ prompt
+    def _system_prompt(self, pid: str, persona: dict, mem) -> str:
+        llm = self.cfg.get("llm") or {}
+        parts = [
+            f"你现在的身份是「{persona.get('name')}」。{persona.get('prompt') or ''}".strip(),
+            (llm.get("persona") or "").strip(),
+            (llm.get("system_prompt") or "").strip(),
+        ]
+        state = mem.get_state("__persona__")
+        if (self.cfg.get("mood") or {}).get("enabled"):
+            parts.append(mood_mod.describe(state.get("mood") or {}))
+        traits = state.get("traits") or {}
+        if traits:
+            shown = "，".join(f"{k} {v}" for k, v in list(traits.items())[:6])
+            parts.append(f"你的性格倾向（0-1，越高越明显）：{shown}。")
+        parts.append(
+            "输出要求：只回一两句话（≤25字），口语，不用 markdown/列表/总结，不说自己是 AI。"
+            "想发表情包就在末尾加 [表情]；需要分享链接时把 URL 直接写进回复。"
+        )
+        return "\n".join(p for p in parts if p)
+
+    def _system_prompt_for(self, chat_id: str) -> str:
+        pid, persona, mem = self._ctx(chat_id)
+        base = self._system_prompt(pid, persona, mem)
+        summary = mem.get_summary(chat_id)
+        facts = mem.facts(chat_id)
+        extra = []
+        if summary:
+            extra.append(f"你记得之前的情况：{summary}")
+        if facts:
+            extra.append("你记得这些事：" + "；".join(f"{k}：{v}" for k, v in list(facts.items())[:12]))
+        diary = mem.kv_get(chat_id, "diary_last")
+        if diary:
+            extra.append(f"你昨晚睡前写的日记（只有你自己知道，可以偶尔流露出这个心情）：{diary}")
+        return "\n".join([base] + extra)
+
+    # ------------------------------------------------------------ 旧事回忆
+    STOP_WORDS = {
+        "什么", "怎么", "可以", "我们", "你们", "他们", "这个", "那个", "就是", "不是", "没有", "知道",
+        "觉得", "时候", "现在", "今天", "明天", "帮我", "给我", "一个", "一下", "还是", "但是", "因为",
+        "所以", "如果", "然后", "真的", "好像", "是不", "有点", "感觉", "东西", "事情",
+    }
+
+    def _keywords(self, text: str) -> list[str]:
+        out: list[str] = []
+        for c in re.findall(r"[\u4e00-\u9fa5A-Za-z]{2,6}", text or ""):
+            if c in self.STOP_WORDS or c in out:
+                continue
+            out.append(c)
+        return out[:5]
+
+    def _recall(self, chat_id: str, mem, text: str, skip: int = 40) -> str:
+        """翻旧账：BM25 语义检索，没命中再退回关键词。"""
+        from .. import recall as recall_mod
+
+        hits = recall_mod.search_memory(mem, chat_id, text, skip_recent=skip, limit=6)
+        if not hits:
+            words = self._keywords(text)
+            if words:
+                hits = mem.search(chat_id, words, limit=6, skip_recent=skip)
+        if not hits:
+            return ""
+        lines = []
+        for h in hits:
+            who = "他" if h["role"] == "user" else "我"
+            when = time.strftime("%m月%d日", time.localtime(h["ts"]))
+            lines.append(f"[{when}] {who}：{h['content'][:60]}")
+        log.info("旧事回忆命中 %d 条（BM25）", len(hits))
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------ 联网
+    async def _gather_context(self, text: str) -> str:
+        wcfg = self.cfg.get("web") or {}
+        if not wcfg.get("enabled"):
+            return ""
+        max_chars = int(wcfg.get("max_chars") or 2500)
+        pages, bili, search = [], [], []
+        for url in web_tools.find_urls(text)[:2]:
+            pages.append(await web_tools.fetch_text(url, max_chars=max_chars))
+        if any(h in text for h in VIDEO_HINTS) and wcfg.get("bilibili", True):
+            keyword = re.sub(r"^(帮我|给我|你能|能不能)+", "", text).strip("，。！？? ")
+            if any(h in text for h in HOT_HINTS) or len(keyword) < 3:
+                bili = await web_tools.bilibili_hot(limit=5)
+            else:
+                bili = await web_tools.bilibili_search(keyword[:20], limit=5)
+            if not bili:
+                bili = await web_tools.bilibili_hot(limit=5)
+        if not bili and any(h in text for h in SEARCH_HINTS) and len(text) >= 6:
+            search = await web_tools.web_search(text[:30], limit=5)
+        block = web_tools.context_block(pages, bili, search)
+        if block:
+            log.info("已联网取资料 %d 字", len(block))
+        return block
+
+    # ------------------------------------------------------------ 发送
+    async def _type_delay(self, text: str, scale: float = 1.0) -> None:
+        cfg = self.cfg.get("typing") or {}
+        if not cfg.get("enabled"):
+            return
+        ms = min(len(text) * float(cfg.get("per_char_ms") or 55) * scale, float(cfg.get("max_ms") or 5000))
+        await asyncio.sleep((ms + random.uniform(0, float(cfg.get("jitter_ms") or 700))) / 1000)
+
+    def _split(self, text: str, limit: int | None = None) -> list[str]:
+        cfg = self.cfg.get("split") or {}
+        if not cfg.get("enabled"):
+            return [text]
+        limit = int(limit or cfg.get("max_segments") or 3)
+        parts = [p.strip() for p in re.split(r"(?<=[。！？!?…\n])", text) if p.strip()]
+        if len(parts) <= 1:
+            return [text]
+        if len(parts) > limit:
+            parts = parts[: limit - 1] + ["".join(parts[limit - 1 :])]
+        return parts
+
+    async def _send_text(self, event, text: str, limit: int | None = None, typing_scale: float = 1.0) -> None:
+        gap = (self.cfg.get("split") or {}).get("gap_ms") or [500, 1500]
+        segs = self._split(text, limit=limit)
+        for i, seg in enumerate(segs):
+            await self._type_delay(seg, scale=typing_scale)
+            await self.bot.reply(event, seg)
+            if i < len(segs) - 1:
+                await asyncio.sleep(random.uniform(gap[0], gap[1]) / 1000)
+
+    async def _send_sticker(self, event, chat_id: str) -> None:
+        if not (self.cfg.get("stickers") or {}).get("enabled"):
+            return
+        _pid, _persona, mem = self._ctx(chat_id)
+        label = mood_mod.label(mem.get_state("__persona__").get("mood") or {})
+        path = self.stickers.pick(label)
+        try:
+            if path is not None:
+                await asyncio.sleep(random.uniform(0.4, 1.2))
+                target = event.group_id if event.group_id is not None else event.user_id
+                fn = self.bot.send_group_msg if event.group_id is not None else self.bot.send_private_msg
+                await fn(target, [seg_image(str(path))])
+                log.info("已发表情包 %s", path.name)
+            else:
+                await self.bot.reply(event, [seg_face(random_face())])
+        except Exception as exc:
+            log.warning("表情包发送失败：%r", exc)
+
+    async def _send_voice(self, event, text: str) -> bool:
+        """说成语音条。失败就返回 False，让调用方退回文字。"""
+        from ..tts import speak
+
+        tcfg = self.cfg.get("tts") or {}
+        try:
+            silk = await speak(text, voice=tcfg.get("voice") or "zh-CN-XiaoyiNeural", cfg=tcfg)
+        except Exception as exc:
+            log.warning("语音合成异常：%r", exc)
+            return False
+        if not silk:
+            return False
+        target = event.group_id if event.group_id is not None else event.user_id
+        fn = self.bot.send_group_msg if event.group_id is not None else self.bot.send_private_msg
+        try:
+            await fn(target, [seg_record(silk)])
+            log.info("语音已发送：%s", text[:30])
+            return True
+        except Exception as exc:
+            log.warning("语音发送失败：%r", exc)
+            return False
+
+    # ------------------------------------------------------------ 性格驱动行为
+    def _traits(self, mem, chat_id: str) -> dict:
+        st = mem.get_state("__persona__")
+        return {k: float(v) for k, v in (st.get("traits") or {}).items() if isinstance(v, (int, float))}
+
+    def _behave(self, mem, chat_id: str) -> dict:
+        """把性格数值翻译成实际行为参数，而不是只写进提示词。"""
+        t = self._traits(mem, chat_id)
+        sticky = t.get("黏人", 0.35)
+        chatty = t.get("话多", 0.4)
+        gloomy = t.get("丧", 0.2)
+        funny = t.get("幽默", 0.5)
+
+        stcfg = self.cfg.get("stickers") or {}
+        tcfg = self.cfg.get("tts") or {}
+        pcfg = self.cfg.get("proactive") or {}
+        scfg = self.cfg.get("split") or {}
+
+        base_sticker = float(stcfg.get("probability") or 0.35)
+        base_voice = float(tcfg.get("probability") or 0.22)
+        min_min = float(pcfg.get("min_minutes") or 45)
+        max_min = float(pcfg.get("max_minutes") or 180)
+
+        return {
+            "sticker_prob": max(0.05, min(0.85, base_sticker + sticky * 0.3 + funny * 0.15 - gloomy * 0.2)),
+            "voice_prob": max(0.0, min(0.6, base_voice + sticky * 0.2)),
+            "segments": max(1, min(3, int(round(1 + chatty * 2)))),
+            "proactive_min": max(20, int(min_min * (1.3 - sticky * 0.7))),
+            "proactive_max": max(40, int(max_min * (1.3 - sticky * 0.7))),
+            "typing_scale": 1.0 + gloomy * 0.4,
+            "traits": t,
+            "split_max": int(scfg.get("max_segments") or 3),
+        }
+
+    # ------------------------------------------------------------ 反馈学习
+    NEG_WORDS = ("别烦", "烦人", "闭嘴", "滚", "别发", "少发", "打扰", "不想聊", "别说了", "安静")
+    POS_WORDS = ("哈哈", "喜欢", "想你", "可爱", "么么", "爱你", "抱抱", "开心", "好笑", "有趣", "厉害")
+
+    def _learn_from(self, chat_id: str, mem, text: str) -> dict:
+        """从这一句里学：他烦了还是喜欢？据此微调性格和主动频率。"""
+        t = dict(self._traits(mem, chat_id))
+        if not t:
+            t = {"黏人": 0.35, "话多": 0.4, "幽默": 0.5, "丧": 0.2}
+        before = dict(t)
+        note = ""
+
+        neg = [w for w in self.NEG_WORDS if w in text]
+        pos = [w for w in self.POS_WORDS if w in text]
+
+        if neg:
+            t["黏人"] = t.get("黏人", 0.35) - 0.15
+            t["话多"] = t.get("话多", 0.4) - 0.06
+            note = f"他说了「{neg[0]}」，我该收敛点"
+            mem.kv_set(chat_id, "quiet_until", time.time() + 3 * 3600)  # 三小时内不主动
+        elif pos:
+            t["黏人"] = t.get("黏人", 0.35) + 0.08
+            t["幽默"] = t.get("幽默", 0.5) + 0.03
+            note = f"他回了「{pos[0]}」，看来他吃这套"
+        elif len(text.strip()) <= 3:
+            t["黏人"] = t.get("黏人", 0.35) - 0.02
+            note = "他回得很短，可能在忙"
+        elif len(text) >= 25:
+            t["话多"] = t.get("话多", 0.4) + 0.03
+            note = "他愿意跟我多说几句"
+
+        t = {k: round(max(0.0, min(1.0, float(v))), 2) for k, v in t.items()}
+        if t != before:
+            st = mem.get_state("__persona__")
+            mem.set_state("__persona__", st.get("mood") or {}, t)
+            log.info("性格微调[%s]：%s → %s（%s）", chat_id, before, t, note)
+        if note:
+            log_events = mem.kv_get(chat_id, "learn_log", []) or []
+            log_events.append({"ts": round(time.time()), "note": note, "traits": t})
+            mem.kv_set(chat_id, "learn_log", log_events[-30:])
+        return t
+
+    # ------------------------------------------------------------ 日记
+    async def _write_diary(self, chat_id: str, force: bool = False) -> str:
+        pid, persona, mem = self._ctx(chat_id)
+        today = time.strftime("%Y-%m-%d")
+        if not force and mem.kv_get(chat_id, f"diary_{today}"):
+            return ""
+        history = mem.recent(chat_id, 40)
+        if len(history) < 4:
+            return ""
+        convo = "\n".join(f"{'他' if m['role'] == 'user' else '我'}：{m['content']}" for m in history)
+        st = mem.get_state("__persona__")
+        ask = (
+            f"今天你和他的聊天记录如下：\n{convo}\n\n"
+            f"你此刻的心情是 {mood_mod.label(st.get('mood') or {})}。"
+            "用第一人称写一段今天的日记，60-120 字，写你注意到的事、你的感受、你不敢说出口的那句话。"
+            "不要总结对话，不要用「今天他跟我说」这种句式开头，像真的在心里想。"
+        )
+        text = await self._chat(
+            [
+                {"role": "system", "content": f"你是「{persona.get('name')}」。" + (persona.get("prompt") or "")},
+                {"role": "user", "content": ask},
+            ],
+            temperature=0.9,
+            kind="diary",
+            persona=persona.get("name", ""),
+            chat_id=chat_id,
+        )
+        text = (text or "").strip()
+        if text:
+            mem.kv_set(chat_id, f"diary_{today}", text)
+            mem.kv_set(chat_id, "diary_last", text)
+            log.info("日记已写[%s]：%s", persona.get("name"), text[:40])
+        return text
+
+    async def _diary_loop(self) -> None:
+        await asyncio.sleep(180)
+        while True:
+            hour = int((self.cfg.get("memory") or {}).get("diary_hour", 23))
+            if datetime.now().hour == hour:
+                for p in self.store.personas():
+                    mem = self.store.memory(p["id"])
+                    for chat_id in mem.known_chats(10):
+                        try:
+                            await self._write_diary(chat_id)
+                        except Exception as exc:
+                            log.warning("写日记失败 %s：%r", chat_id, exc)
+            await asyncio.sleep(3600)
+
+    def start_diary(self) -> None:
+        if self._diary_task is None or self._diary_task.done():
+            self._diary_task = asyncio.create_task(self._diary_loop())
+
+    # ------------------------------------------------------------ 复盘
+    async def _reflect(self, chat_id: str) -> None:
+        if not self._llm_ready():
+            return
+        pid, persona, mem = self._ctx(chat_id)
+        history = mem.recent(chat_id, 30)
+        if len(history) < 6:
+            return
+        convo = "\n".join(f"{'对方' if m['role'] == 'user' else '我'}：{m['content']}" for m in history)
+        raw = await self._chat(
+            [
+                {"role": "system", "content": f"你是「{persona.get('name')}」。\n" + REFLECT_PROMPT},
+                {"role": "user", "content": convo[:3000]},
+            ],
+            temperature=0.3,
+        )
+        m = re.search(r"\{.*\}", raw, re.S)
+        if not m:
+            return
+        try:
+            data = json.loads(m.group(0))
+        except Exception:
+            return
+        if data.get("summary"):
+            mem.set_summary(chat_id, str(data["summary"])[:400])
+        for k, v in (data.get("facts") or {}).items():
+            mem.upsert_fact(chat_id, k, v)
+        important = [str(x) for x in (data.get("important") or []) if str(x).strip()]
+        kept = mem.mark_keep(chat_id, important)
+        traits = {
+            str(k): round(float(v), 2) for k, v in (data.get("traits") or {}).items() if isinstance(v, (int, float))
+        }
+        if traits:
+            state = mem.get_state("__persona__")
+            merged = dict(state.get("traits") or {})
+            merged.update(traits)
+            mem.set_state("__persona__", state.get("mood") or {}, merged)
+        mem.reset_counter(chat_id)
+        log.info(
+            "复盘完成[%s]：事实%d条 性格%d项 永久保留%d条对话",
+            persona.get("name"),
+            len(data.get("facts") or {}),
+            len(traits),
+            kept,
+        )
+
+    # ------------------------------------------------------------ 白名单
+    def _allowed(self, event) -> bool:
+        """白名单开启时：只有名单里的号（和群）才会被回复/主动找。"""
+        wl = self.cfg.get("whitelist") or {}
+        if not wl.get("enabled", True):
+            return True
+        users = {str(u).strip() for u in (wl.get("users") or []) if str(u).strip()}
+        groups = {str(g).strip() for g in (wl.get("groups") or []) if str(g).strip()}
+        if event.group_id is not None:
+            if str(event.group_id) not in groups:
+                return False
+            return (not users) or (str(event.user_id) in users)
+        return str(event.user_id) in users
+
+    # ------------------------------------------------------------ 被动回复
+    def _target_ok(self, event) -> bool:
+        if event.sub_type == "private":
+            return bool(self.cfg.get("reply_private"))
+        if event.group_id is not None:
+            if not self.cfg.get("reply_group"):
+                return False
+            if self.cfg.get("group_at_only") and f"@{self.bot.self_id}" not in (event.message or ""):
+                return False
+            return random.random() <= float(self.cfg.get("group_reply_probability") or 1.0)
+        return False
+
+    async def handle(self, event) -> bool:
+        self.refresh()
+        if not self.cfg.get("enabled") or not self._allowed(event):
+            return False
+
+        # 先顺手把别人发的图存进表情包库（不花钱、不费 token）
+        stolen = None
+        if (self.cfg.get("stickers") or {}).get("steal", True):
+            from ..sticker_steal import steal as _steal
+
+            stolen = await _steal(event, self.stickers.root)
+            if stolen is not None:
+                self.stickers.scan()
+
+        if not self._target_ok(event):
+            return False
+
+        chat_id = f"g{event.group_id}" if event.group_id is not None else f"u{event.user_id}"
+        text = (event.command_text or event.message or "").strip()
+        if not text:
+            # 只发了个图：有一半概率吱一声，像真人那样
+            if stolen is not None and random.random() < 0.5:
+                await asyncio.sleep(random.uniform(0.5, 1.5))
+                await self.bot.reply(event, random.choice(["这图我收了", "存了，回头用", "哈哈这表情我留着了"]))
+                return True
+            return False
+
+        gap = float(self.cfg.get("cooldown") or 0)
+        now = time.monotonic()
+        if now - self._last.get(chat_id, 0) < gap:
+            return False
+        self._last[chat_id] = now
+
+        pid, persona, mem = self._ctx(chat_id)
+        mem.add_message(chat_id, "user", text)
+        if (self.cfg.get("mood") or {}).get("enabled"):
+            state = mem.get_state("__persona__")
+            state["mood"] = mood_mod.nudge(mood_mod.load(state.get("mood") or {}), text)
+            mem.set_state("__persona__", state["mood"], state.get("traits") or {})
+
+        self._learn_from(chat_id, mem, text)          # 从他这句话里学一点
+        beh = self._behave(mem, chat_id)              # 性格 → 实际行为参数
+
+        # —— 生活感：作息 / 亲密度 / 记仇 / 已读不回 ——
+        lcfg = self.cfg.get("life") or {}
+        life_on = bool(lcfg.get("enabled", True))
+        ph = life_mod.phase(persona.get("life") if isinstance(persona, dict) else None)
+        icfg = self.cfg.get("intimacy") or {}
+        if icfg.get("enabled", True):
+            intr = life_mod.bump_intimacy(mem, chat_id, float(icfg.get("per_msg") or 1.0))
+        else:
+            try:
+                intr = float(mem.kv_get(chat_id, "intimacy") or 0)
+            except Exception:
+                intr = 0.0
+        tier_name, tier_hint = life_mod.tier_of(intr)
+        gcfg = self.cfg.get("grudge") or {}
+        if gcfg.get("enabled", True):
+            life_mod.notice_hurt(mem, chat_id, text, float(gcfg.get("hours") or 10))
+        angry = life_mod.grudge_left(mem, chat_id) > 0
+
+        pcfg = self.cfg.get("playful") or {}
+        wait = life_mod.delay_seconds(lcfg, ph) if life_on else 1.0
+        if angry:
+            wait *= 2.5
+        if pcfg.get("enabled", True) and random.random() < float(pcfg.get("read_delay_chance") or 0.06):
+            wait += random.uniform(60, 150)
+        await asyncio.sleep(max(0.5, min(wait, 180)))
+
+        if not self._llm_ready():
+            if self.cfg.get("fallback"):
+                await self._send_text(event, str(self.cfg["fallback"]))
+                return True
+            return False
+
+        context = await self._gather_context(text)
+        messages = [{"role": "system", "content": self._system_prompt_for(chat_id)}]
+        if context:
+            messages.append({"role": "system", "content": "参考资料（可用于回答，别照搬）：\n" + context})
+
+        blocks = []
+        if life_on:
+            blocks.append(f"【此刻】现在是{datetime.now().strftime('%H:%M')}，你在{ph['label']}：{ph['hint']}。"
+                          + ("话要短，最多一句。" if ph["short"] else ""))
+        blocks.append(f"【关系】你和他现在是「{tier_name}」：{tier_hint}。别跳出这个分寸。")
+        if angry:
+            blocks.append("【情绪】你还在为刚才那句话生气：回得冷、句子短，不哄他、不发表情包、不主动找话题。")
+        elif pcfg.get("enabled", True) and random.random() < 0.55:
+            blocks.append("【主动】这一句后面顺手问他一件小事（今天干嘛了/吃了没/几点睡），只问一件。")
+        messages.append({"role": "system", "content": "\n".join(blocks)})
+
+        history = int((self.cfg.get("memory") or {}).get("history") or 40)
+        recall = self._recall(chat_id, mem, text, skip=history)
+        if recall:
+            messages.append({"role": "system", "content": "你忽然想起以前聊过的这些（可以自然地提一句，别硬提）：\n" + recall})
+        messages.extend(mem.recent(chat_id, history))
+
+        # 「做个图」：现场拼一张给她
+        if re.search(r"(做个?图|做张?图|发张?图|发个图|梗图|把.{0,14}做成图)", text):
+            if await self._send_made_image(event, chat_id, text):
+                mem.add_message(chat_id, "assistant", "[自己做了张图发过去]")
+                return True
+
+        answer = await self._chat(messages)
+        if not answer:
+            return False
+
+        want_sticker = bool(re.search(r"[\[【](表情|表情包|sticker)[\]】]", answer))
+        answer = re.sub(r"[\[【](表情|表情包|sticker)[\]】]", "", answer).strip()
+
+        tcfg = self.cfg.get("tts") or {}
+        force_voice = bool(re.search(r"(发个?语音|说句话|语音回|用语音)", text))
+        use_voice = bool(answer) and (
+            force_voice
+            or (
+                tcfg.get("enabled")
+                and len(answer) <= int(tcfg.get("max_chars") or 60)
+                and random.random() < float(beh["voice_prob"])
+            )
+        )
+        spoken = await self._send_voice(event, answer) if use_voice else False
+        if answer and not spoken:
+            await self._send_text(event, answer, limit=beh["segments"], typing_scale=beh["typing_scale"])
+        mem.add_message(chat_id, "assistant", answer)
+
+        if pcfg.get("enabled", True) and not angry and random.random() < float(pcfg.get("typo_chance") or 0.05):
+            await self._slip_and_fix(event, answer, beh)
+
+        if not angry and (want_sticker or random.random() < float(beh["sticker_prob"])):
+            await self._send_sticker(event, chat_id)
+
+        icfg = self.cfg.get("image") or {}
+        if answer and icfg.get("enabled", True) and random.random() < float(icfg.get("probability") or 0.05):
+            await self._send_made_image(event, chat_id, answer, kind="quote")
+
+        every = int((self.cfg.get("memory") or {}).get("reflect_every") or 12)
+        n = mem.bump_counter(chat_id)
+        if every > 0 and n >= every:
+            asyncio.create_task(self._reflect(chat_id))
+        return True
+
+    # ------------------------------------------------------------ 自己做图
+    async def _send_made_image(self, event, chat_id: str, text: str, kind: str = "auto") -> bool:
+        """用 PIL 现场拼一张图发出去：梗图 / 金句卡。"""
+        from .. import makeimg
+
+        _pid, persona, mem = self._ctx(chat_id)
+        icfg = self.cfg.get("image") or {}
+        if not icfg.get("enabled", True):
+            return False
+
+        line = re.sub(r"^(给我|帮我|你)+", "", (text or "").strip())
+        line = re.sub(r"(做个?图|做张?图|发张?图|发个图|梗图|做成图|图片|图)[吧啊呀嘛呢?？]*", "", line).strip()
+        line = line.strip("，。！？、:： ")
+        if len(line) < 2:
+            hist = mem.recent(chat_id, 6)
+            line = next((m["content"] for m in reversed(hist) if m["role"] == "assistant"), "今天有点想你")
+            line = line[:60]
+
+        author = persona.get("name") or "小柚"
+        try:
+            if kind == "quote":
+                path = makeimg.quote(line, author=author)
+            elif kind == "meme":
+                path = makeimg.meme(line)
+            elif re.search(r"梗图|搞笑|笑死|哈哈", line):
+                path = makeimg.meme(line)
+            else:
+                path = makeimg.meme(line) if random.random() < 0.55 else makeimg.quote(line, author=author)
+        except Exception as exc:
+            log.warning("拼图失败：%r", exc)
+            return False
+        if not path:
+            return False
+
+        target = event.group_id if event.group_id is not None else event.user_id
+        fn = self.bot.send_group_msg if event.group_id is not None else self.bot.send_private_msg
+        try:
+            await asyncio.sleep(random.uniform(0.4, 1.2))
+            await fn(target, [seg_image(path)])
+        except Exception as exc:
+            log.warning("发图失败：%r", exc)
+            return False
+        log.info("自己做了张图[%s]：%s（%s）", author, line[:24], path)
+        return True
+
+    # ------------------------------------------------------------ 手滑
+    async def _slip_and_fix(self, event, answer: str, beh: dict) -> None:
+        """手滑：先发一句打错的，隔一两秒撤回，再发对的。"""
+        broken = life_mod.typo(answer)
+        if not broken or broken == answer:
+            return
+        target = event.group_id if event.group_id is not None else event.user_id
+        fn = self.bot.send_group_msg if event.group_id is not None else self.bot.send_private_msg
+        try:
+            await asyncio.sleep(random.uniform(0.3, 0.9))
+            res = await fn(target, broken)
+            mid = (res or {}).get("message_id") if isinstance(res, dict) else None
+            await asyncio.sleep(random.uniform(1.0, 2.4))
+            if mid:
+                await self.bot.call_api("delete_msg", message_id=mid)
+                log.info("手滑了一下，撤回了：%s", broken[:20])
+        except Exception as exc:
+            log.debug("手滑失败：%r", exc)
+
+    # ------------------------------------------------------------ 视频分享
+    def _interest_keywords(self, chat_id: str) -> list[str]:
+        vcfg = self.cfg.get("video") or {}
+        kws = [str(k) for k in (vcfg.get("keywords") or []) if str(k).strip()]
+        _pid, _persona, mem = self._ctx(chat_id)
+        facts = mem.facts(chat_id)
+        for key in ("喜好", "兴趣", "爱好", "喜欢的", "游戏", "番剧", "追的剧"):
+            for k, v in facts.items():
+                if key in k:
+                    kws.append(str(v)[:12])
+        return [k for k in kws if k][:4]
+
+    async def _share_video(self, event, chat_id: str) -> bool:
+        """逛 B 站，挑一个没发过的，用自己的口吻分享。B 站关掉时自动转抖音。"""
+        vcfg = self.cfg.get("video") or {}
+        if not vcfg.get("enabled", True):
+            return False
+        if not vcfg.get("bili", True):
+            return await self._share_douyin(event, chat_id)
+
+        _pid, persona, mem = self._ctx(chat_id)
+        seen = [str(x) for x in (mem.kv_get(chat_id, "shared_bvids", []) or [])][-60:]
+
+        items: list[dict] = []
+        for kw in self._interest_keywords(chat_id):
+            items = await web_tools.bilibili_search(kw, limit=8)
+            items = [it for it in items if web_tools.bvid_of(it) not in seen]
+            if items:
+                break
+        if not items:
+            items = [it for it in await web_tools.bilibili_hot(limit=12) if web_tools.bvid_of(it) not in seen]
+        if not items:
+            return False
+
+        pick = random.choice(items[:5])
+        bvid = web_tools.bvid_of(pick)
+        info = await web_tools.bilibili_video_info(bvid) if bvid else {}
+        title = info.get("title") or pick.get("title") or ""
+        if not title:
+            return False
+        desc = info.get("desc") or ""
+        author = info.get("author") or pick.get("author") or ""
+        play = info.get("view") or pick.get("play") or 0
+        url = info.get("url") or pick.get("url") or ""
+
+        ask = (
+            f"你刚刷到一个视频：《{title}》，UP主是{author}，简介：{desc[:150]}。"
+            "用你自己的语气跟他说一句，20 字以内，像随口安利，别用「推荐」「链接」这种词。"
+        )
+        say = await self._chat(
+            [
+                {"role": "system", "content": self._system_prompt_for(chat_id)},
+                {"role": "user", "content": ask},
+            ],
+            temperature=0.95,
+        )
+        say = re.sub(r"[\[【](表情|表情包)[\]】]", "", say or "").strip() or "这个你肯定爱看"
+
+        target = event.group_id if event.group_id is not None else event.user_id
+        fn = self.bot.send_group_msg if event.group_id is not None else self.bot.send_private_msg
+        try:
+            await asyncio.sleep(random.uniform(0.6, 1.6))
+            await self.bot.reply(event, say)
+            await asyncio.sleep(random.uniform(0.8, 1.8))
+            await fn(target, [seg_link(url, title=title, desc=f"{author} · {max(0, int(play))} 播放")])
+        except Exception as exc:
+            log.warning("分享视频失败：%r", exc)
+            return False
+
+        if bvid:
+            seen.append(bvid)
+            mem.kv_set(chat_id, "shared_bvids", seen[-60:])
+        log.info("分享视频[%s]：%s %s", persona.get("name"), title[:30], url)
+        return True
+
+    async def _share_douyin(self, event, chat_id: str) -> bool:
+        """刷抖音：抓推荐流 → 截屏 → 用自己的口吻分享。抓不到就退回热榜链接。"""
+        from .. import douyin as douyin_mod
+
+        _pid, persona, mem = self._ctx(chat_id)
+        seen = [str(x) for x in (mem.kv_get(chat_id, "shared_douyin", []) or [])][-60:]
+
+        vcfg = self.cfg.get("video") or {}
+        headless = bool(vcfg.get("headless", True))
+        prefer = str(vcfg.get("browser") or "edge")
+
+        items = [it for it in await douyin_mod.fetch_feed(limit=10, scroll=2, headless=headless, prefer=prefer)
+                 if it.get("title") not in seen]
+        shot = None
+        if items:
+            shot = await douyin_mod.capture(path=f"tmp/douyin-{int(time.time())}.jpg", headless=headless, prefer=prefer)
+
+        hot_items = []
+        if not items or not shot:
+            hot_items = [it for it in await web_tools.douyin_hot(14) if it.get("title") not in seen]
+        if not items and not hot_items:
+            return False
+
+        if items:
+            pick = random.choice(items[:5])
+            title = pick.get("title") or ""
+            author = pick.get("author") or ""
+            url = pick.get("url") or ""
+            hot = ""
+        else:
+            pick = random.choice(hot_items[:6])
+            title = pick.get("title") or ""
+            author = ""
+            url = pick.get("url") or ""
+            hot = pick.get("hot") or ""
+
+        hint = f"《{title}》" + (f"，作者 {author}" if author else "") + (f"（热度 {hot}）" if hot else "")
+        ask = (
+            f"你刚在抖音刷到{hint}。"
+            "用你自己的语气跟他说一句，25 字以内，像随口分享，别用「推荐」「热搜」「链接」这些词。"
+        )
+        say = await self._chat(
+            [
+                {"role": "system", "content": self._system_prompt_for(chat_id)},
+                {"role": "user", "content": ask},
+            ],
+            temperature=0.95,
+        )
+        say = re.sub(r"[\[【](表情|表情包)[\]】]", "", say or "").strip() or f"刷到这个，{title[:12]}"
+
+        target = event.group_id if event.group_id is not None else event.user_id
+        fn = self.bot.send_group_msg if event.group_id is not None else self.bot.send_private_msg
+        try:
+            await asyncio.sleep(random.uniform(0.6, 1.5))
+            await self.bot.reply(event, say)
+            await asyncio.sleep(random.uniform(0.8, 1.8))
+            if shot:
+                await fn(target, [seg_image(shot)])
+            elif url:
+                await fn(target, [seg_link(url, title=title[:40], desc=f"抖音 · {author or hot}")])
+            else:
+                return False
+        except Exception as exc:
+            log.warning("分享抖音失败：%r", exc)
+            return False
+
+        seen.append(title)
+        mem.kv_set(chat_id, "shared_douyin", seen[-60:])
+        log.info("分享抖音[%s]：%s（%s）", persona.get("name"), title[:30], "截图" if shot else "链接")
+        return True
+
+    async def _video_loop(self) -> None:
+        """定时刷视频，看到有意思的主动发给他。"""
+        await asyncio.sleep(420)
+        while True:
+            vcfg = self.cfg.get("video") or {}
+            if not vcfg.get("enabled"):
+                await asyncio.sleep(3600)
+                continue
+            hours = float(vcfg.get("share_hours") or 3)
+            await asyncio.sleep(max(1200, hours * 3600))
+            if not vcfg.get("enabled") or self._quiet(datetime.now().hour) or not self._llm_ready():
+                continue
+            self._today_key()
+            cap = int(vcfg.get("daily_max") or 3)
+            for chat_id in self._whitelisted_targets():
+                if self._video_today.get(chat_id, 0) >= cap:
+                    continue
+                kind, target = chat_id[0], chat_id[1:]
+                ev = _Shell(
+                    group_id=int(target) if kind == "g" else None,
+                    user_id=int(target) if kind == "u" else None,
+                )
+                try:
+                    use_douyin = bool(vcfg.get("douyin", True)) and random.random() < 0.35
+                    ok = await self._share_douyin(ev, chat_id) if use_douyin else await self._share_video(ev, chat_id)
+                    if ok:
+                        self._video_today[chat_id] = self._video_today.get(chat_id, 0) + 1
+                except Exception as exc:
+                    log.warning("主动分享视频失败 %s：%r", chat_id, exc)
+
+    def start_video(self) -> None:
+        if self._video_task is None or self._video_task.done():
+            self._video_task = asyncio.create_task(self._video_loop())
+
+    def _whitelisted_targets(self) -> list[str]:
+        p = self.cfg.get("proactive") or {}
+        targets = [str(t) for t in (p.get("targets") or [])]
+        if not targets:
+            for pid in [x.get("id") for x in self.store.personas()]:
+                targets.extend([c for c in self.store.memory(pid).known_chats(10) if c.startswith("u")])
+        wl = self.cfg.get("whitelist") or {}
+        if wl.get("enabled", True):
+            users = {str(u).strip() for u in (wl.get("users") or []) if str(u).strip()}
+            groups = {str(g).strip() for g in (wl.get("groups") or []) if str(g).strip()}
+            targets = [
+                t for t in targets if (t[:1] == "u" and t[1:] in users) or (t[:1] == "g" and t[1:] in groups)
+            ]
+        return targets
+
+    # ------------------------------------------------------------ 主动开聊
+    def _quiet(self, hour: int) -> bool:
+        p = self.cfg.get("proactive") or {}
+        start, end = int(p.get("quiet_start", 23)), int(p.get("quiet_end", 8))
+        return hour >= start or hour < end
+
+    def _today_key(self) -> str:
+        day = time.strftime("%Y-%m-%d")
+        if day != self._day:
+            self._day, self._sent_today = day, {}
+        return day
+
+    async def _proactive_once(self) -> int:
+        p = self.cfg.get("proactive") or {}
+        if not p.get("enabled") or not self._llm_ready() or self._quiet(datetime.now().hour):
+            return 0
+
+        self._today_key()
+        cap = int(p.get("max_per_day") or 6)
+        targets = [str(t) for t in (p.get("targets") or [])]
+        if not targets:
+            for pid in [x.get("id") for x in self.store.personas()]:
+                targets.extend([c for c in self.store.memory(pid).known_chats(10) if c.startswith("u")])
+
+        wl = self.cfg.get("whitelist") or {}
+        if wl.get("enabled", True):
+            users = {str(u).strip() for u in (wl.get("users") or []) if str(u).strip()}
+            groups = {str(g).strip() for g in (wl.get("groups") or []) if str(g).strip()}
+            targets = [
+                t for t in targets if (t[:1] == "u" and t[1:] in users) or (t[:1] == "g" and t[1:] in groups)
+            ]
+
+        sent = 0
+        for chat_id in targets:
+            kind = chat_id[0] if chat_id else ""
+            if kind not in ("u", "g"):
+                continue
+            target = chat_id[1:]
+            _pid, persona, mem = self._ctx(chat_id)
+            if self._sent_today.get(chat_id, 0) >= cap:
+                continue
+            if time.time() - mem.last_ts(chat_id) < 20 * 60:
+                continue
+
+            context = ""
+            if random.random() < float(p.get("link_probability") or 0):
+                bili = await web_tools.bilibili_hot(limit=5)
+                if bili:
+                    context = web_tools.context_block([], bili)
+
+            ccfg = self.cfg.get("care") or {}
+            if ccfg.get("enabled", True):
+                hh = datetime.now().hour
+                m0, m1 = (list(ccfg.get("morning") or [7, 10]) + [0, 0])[:2]
+                e0, e1 = (list(ccfg.get("evening") or [20, 23]) + [0, 0])[:2]
+                if m0 <= hh <= m1 or e0 <= hh <= e1:
+                    wline = await asyncio.to_thread(life_mod.weather_line, str(ccfg.get("city") or ""))
+                    if wline:
+                        context = (context + "\n" if context else "") + "今天天气：" + wline
+
+            ask = (
+                f"现在是 {datetime.now().strftime('%H:%M')}，你已经很久没跟对方说话了。"
+                "结合你记得的事，主动找对方聊一句（可以问一句或分享一件事），不超过 20 字。"
+            )
+            if context:
+                ask += "可以顺手分享一个 B 站视频链接。"
+            messages = [{"role": "system", "content": self._system_prompt_for(chat_id)}]
+            if context:
+                messages.append({"role": "system", "content": context})
+            messages.append({"role": "user", "content": ask})
+
+            answer = await self._chat(messages, temperature=1.0)
+            if not answer:
+                continue
+            want_sticker = bool(re.search(r"[\[【](表情|表情包)[\]】]", answer))
+            answer = re.sub(r"[\[【](表情|表情包)[\]】]", "", answer).strip()
+
+            ev = _Shell(group_id=int(target) if kind == "g" else None, user_id=int(target) if kind == "u" else None)
+            try:
+                if answer:
+                    await self._send_text(ev, answer)
+                    mem.add_message(chat_id, "assistant", answer)
+                if want_sticker or random.random() < float(p.get("sticker_probability") or 0):
+                    await self._send_sticker(ev, chat_id)
+                self._sent_today[chat_id] = self._sent_today.get(chat_id, 0) + 1
+                sent += 1
+                log.info("主动开聊[%s] -> %s：%s", persona.get("name"), chat_id, answer[:40])
+            except Exception as exc:
+                log.warning("主动消息失败 %s：%r", chat_id, exc)
+        return sent
+
+    async def _proactive_loop(self) -> None:
+        await asyncio.sleep(30)
+        while True:
+            p = self.cfg.get("proactive") or {}
+            lo = max(5, int(p.get("min_minutes") or 45))
+            hi = max(lo, int(p.get("max_minutes") or 180))
+            await asyncio.sleep(random.randint(lo * 60, hi * 60))
+            try:
+                self.refresh()
+                await self._proactive_once()
+            except Exception as exc:
+                log.error("主动消息循环异常：%r", exc)
+
+    def start_proactive(self) -> None:
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._proactive_loop())
+
+    # ------------------------------------------------------------ 自动备份
+    async def _backup_loop(self) -> None:
+        await asyncio.sleep(60)
+        while True:
+            mcfg = self.cfg.get("memory") or {}
+            hours = float(mcfg.get("backup_hours") or 6)
+            if hours > 0:
+                try:
+                    made = self.store.backup(keep=int(mcfg.get("backup_keep") or 20))
+                    if made:
+                        log.info("自动备份完成：%d 份", len(made))
+                except Exception as exc:
+                    log.error("自动备份失败：%r", exc)
+            await asyncio.sleep(max(600, hours * 3600))
+
+    def start_backup(self) -> None:
+        if self._backup_task is None or self._backup_task.done():
+            self._backup_task = asyncio.create_task(self._backup_loop())
+
+    # ------------------------------------------------------------ 记忆清理
+    async def _prune_loop(self) -> None:
+        """普通对话只留 retain_days 天，重要记忆（keep=1）永久保留。"""
+        await asyncio.sleep(120)
+        while True:
+            mcfg = self.cfg.get("memory") or {}
+            days = float(mcfg.get("retain_days") or 14)
+            if days > 0:
+                for p in self.store.personas():
+                    try:
+                        n = self.store.memory(p["id"]).prune(days)
+                        if n:
+                            log.info("清理[%s]：删除 %d 条超过 %.0f 天的普通记忆", p.get("name"), n, days)
+                    except Exception as exc:
+                        log.error("清理记忆失败 %s：%r", p.get("id"), exc)
+            await asyncio.sleep(max(1800, float(mcfg.get("prune_hours") or 6) * 3600))
+
+    def start_prune(self) -> None:
+        if self._prune_task is None or self._prune_task.done():
+            self._prune_task = asyncio.create_task(self._prune_loop())
+
+
+# ---------------------------------------------------------------- 插件入口
+def setup(bot) -> None:
+    global ENGINE
+    cfg = {}
+    config = getattr(bot, "config", None)
+    if config is not None:
+        try:
+            cfg = config.section("autoreply")
+        except Exception:
+            cfg = {}
+    engine = Companion(bot, cfg)
+    ENGINE = engine
+
+    def chat_of(event) -> str:
+        return f"g{event.group_id}" if event.group_id is not None else f"u{event.user_id}"
+
+    @bot.on_message(priority=900)
+    async def companion_handler(bot, event):
+        return await engine.handle(event)
+
+    async def show_personas(bot, event):
+        chat = chat_of(event)
+        cur = engine.store.chat_persona(chat)
+        active = engine.store.active_id()
+        lines = ["人格列表："]
+        for p in engine.store.personas():
+            mark = " ← 你会话在用的" if p["id"] == cur else ""
+            mark2 = "（默认）" if p["id"] == active else ""
+            lines.append(f"· {p['name']}（{p['id']}）{mark2}{mark}")
+        lines.append("发「切换人格 名字」就可以换人（记忆各自独立）")
+        await bot.reply(event, "\n".join(lines))
+        return True
+
+    async def switch_persona(bot, event):
+        chat = chat_of(event)
+        arg = (event.command_text or "").replace("切换人格", "").replace("换人格", "").strip()
+        target = engine.store.find_by_name(arg)
+        if not target:
+            await bot.reply(event, f"没有叫「{arg}」的人格，发「人格」看看有哪些。")
+            return True
+        engine.store.set_chat_persona(chat, target["id"])
+        await bot.reply(event, f"好，现在是{target['name']}在跟你说话。")
+        return True
+
+    async def show_memory(bot, event):
+        chat = chat_of(event)
+        pid, persona, mem = engine._ctx(chat)
+        st = mem.get_state("__persona__")
+        facts = mem.facts(chat)
+        lines = [
+            f"人格：{persona.get('name')}（{pid}）",
+            f"记忆条数：{mem.message_count(chat)}",
+            f"心情：{mood_mod.label(st.get('mood') or {})}",
+            "性格：" + ("，".join(f"{k}{v}" for k, v in (st.get("traits") or {}).items()) or "还在养成"),
+            "摘要：" + (mem.get_summary(chat) or "无"),
+            "记得的事：" + ("；".join(f"{k}={v}" for k, v in list(facts.items())[:8]) or "无"),
+        ]
+        await bot.reply(event, "\n".join(lines))
+        return True
+
+    async def do_forget(bot, event):
+        chat = chat_of(event)
+        _pid, _persona, mem = engine._ctx(chat)
+        mem.forget(chat)
+        await bot.reply(event, "好，关于你的记忆我清空了。")
+        return True
+
+    async def do_backup(bot, event):
+        made = engine.store.backup(keep=int((engine.cfg.get("memory") or {}).get("backup_keep") or 20))
+        if made:
+            names = "、".join(x.split("\\")[-1] for x in made)
+            await bot.reply(event, f"已备份 {len(made)} 份：{names}")
+        else:
+            await bot.reply(event, "没有可备份的记忆（还没聊过？）")
+        return True
+
+    async def do_restore(bot, event):
+        arg = (event.command_text or "").replace("恢复记忆", "").replace("恢复备份", "").strip()
+        if not arg:
+            items = engine.store.backups()[:5]
+            lines = ["恢复记忆需要指定备份文件，最近的备份："] + [
+                f"· {b['file']}（{b['persona_name']}，{datetime.fromtimestamp(b['time']):%m-%d %H:%M}）" for b in items
+            ]
+            lines.append("发「恢复记忆 文件名」")
+            await bot.reply(event, "\n".join(lines))
+            return True
+        res = engine.store.restore(arg)
+        if res.get("ok"):
+            await bot.reply(event, f"已从 {arg} 恢复（当前库也留了一份安全备份）。")
+        else:
+            await bot.reply(event, f"恢复失败：{res.get('error')}")
+        return True
+
+    for cmd in ("人格", "personas"):
+        bot.on_message(command=cmd, priority=850, desc="看有哪些人格")(show_personas)
+    for cmd in ("切换人格", "换人格"):
+        bot.on_message(command=cmd, priority=850, desc="切换人格：切换人格 阿糖")(switch_persona)
+    for cmd in ("记忆", "memory"):
+        bot.on_message(command=cmd, priority=850, desc="看当前人格记得你什么")(show_memory)
+    for cmd in ("备份记忆", "记忆备份", "backup"):
+        bot.on_message(command=cmd, priority=850, desc="立刻备份记忆")(do_backup)
+    for cmd in ("恢复记忆", "恢复备份"):
+        bot.on_message(command=cmd, priority=850, desc="从备份恢复记忆")(do_restore)
+    for cmd in ("忘记我", "忘掉", "reset"):
+        bot.on_message(command=cmd, priority=850, desc="清空当前会话记忆")(do_forget)
+
+    engine.store.backup()
+    engine.start_proactive()
+    engine.start_backup()
+    engine.start_prune()
+    engine.start_diary()
+    llm = engine.cfg.get("llm") or {}
+    p = engine.cfg.get("proactive") or {}
+    mcfg = engine.cfg.get("memory") or {}
+    log.info(
+        "陪聊引擎就绪｜模型 %s｜人格 %d 个（当前 %s）｜记忆 %s（普通保留 %s 天，重要永久）｜表情包 %d 张｜主动开聊 %s｜白名单 %s",
+        llm.get("model"),
+        len(engine.store.personas()),
+        engine.store.active_id(),
+        "开" if mcfg.get("enabled") else "关",
+        mcfg.get("retain_days"),
+        engine.stickers.count(),
+        "开" if p.get("enabled") else "关",
+        "开" if (engine.cfg.get("whitelist") or {}).get("enabled") else "关",
+    )

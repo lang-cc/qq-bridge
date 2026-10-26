@@ -1,0 +1,5 @@
+websockets>=11,<14
+aiohttp>=3.9
+PyYAML>=6
+Pillow>=10
+edge-tts>=6.1
