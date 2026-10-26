@@ -24,7 +24,11 @@ ROOT = Path(__file__).resolve().parent
 LOGS = ROOT / "logs"
 LOGS.mkdir(exist_ok=True)
 LOCK_PORT = 9335
-ACCOUNT = "1126449714"
+
+sys.path.insert(0, str(ROOT))
+from qqbot.account import bot_account, napcat_launch_args  # noqa: E402
+
+ACCOUNT = bot_account(ROOT)  # 不写死 QQ 号：同一份包谁装都行
 
 log = logging.getLogger("watchdog")
 log.setLevel(logging.INFO)
@@ -90,9 +94,10 @@ def start_napcat(quiet: bool = True) -> None:
     if not bat.exists():
         log.error("找不到 NapCat 启动脚本")
         return
-    subprocess.Popen(["cmd", "/c", str(bat), "-q", ACCOUNT], cwd=str(ROOT / "napcat"),
+    subprocess.Popen(["cmd", "/c", str(bat), *napcat_launch_args(ACCOUNT, quiet=quiet)],
+                     cwd=str(ROOT / "napcat"),
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    log.info("已拉起 NapCat%s", "（静默）" if quiet else "")
+    log.info("已拉起 NapCat%s（账号 %s）", "（静默）" if quiet else "", ACCOUNT or "未指定")
 
 
 def kill_qq() -> None:

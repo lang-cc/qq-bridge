@@ -17,7 +17,7 @@
 set -uo pipefail
 
 ROOT=/opt/qqbridge
-CODE_URL="https://gitee.com/wangcc111/qq-bridge-dist/releases/download/v1.0/qq-bridge-code.zip"
+CODE_URL="${CODE_URL:-https://gitee.com/wangcc111/qq-bridge-dist/raw/main/qq-bridge-code.zip}"
 PIP_MIRROR="https://mirrors.aliyun.com/pypi/simple/"
 STAGE="${STAGE:-all}"
 SWAP_GB="${SWAP_GB:-2}"
@@ -63,17 +63,19 @@ unzip -q "$tmp/code.zip" -d "$tmp/x" || die "解压失败"
 inner=$(find "$tmp/x" -maxdepth 1 -mindepth 1 -type d | head -1)
 if [ -d "$ROOT" ]; then
   warn "已存在 $ROOT：只覆盖代码，保留 config / data / logs / ticket"
-  for d in qqbot docs scripts tools tests; do
-    [ -d "$inner/$d" ] && cp -r "$inner/$d" "$ROOT/"
+  for d in nb qqbot docs scripts tools tests static assets; do
+    [ -d "$inner/$d" ] && { mkdir -p "$ROOT/$d"; cp -r "$inner/$d/." "$ROOT/$d/"; }
   done
-  find "$inner" -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' -o -name '*.md' -o -name '*.yaml' \) -exec cp {} "$ROOT/" \;
+  find "$inner" -maxdepth 1 -type f \( -name '*.py' -o -name '*.sh' -o -name '*.md' -o -name '*.yaml' \
+    -o -name '*.txt' -o -name '*.example' -o -name '*.bat' -o -name '*.ps1' -o -name '*.vbs' \) \
+    -exec cp {} "$ROOT/" \;
 else
   mv "$inner" "$ROOT"
 fi
 rm -rf "$tmp"
 cd "$ROOT" || die "进不去 $ROOT"
 mkdir -p data logs stickers tmp
-ok "代码在 $ROOT"
+ok "代码在 $ROOT（含 nb/ 框架层）"
 
 # ---------- 3. Python ----------
 step "3/7 建 Python 环境"
@@ -246,9 +248,10 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$ROOT
 Environment=TMPDIR=$ROOT/tmp
-ExecStart=$ROOT/.venv/bin/python main.py
+ExecStart=$ROOT/.venv/bin/python main_nb.py
 Restart=always
 RestartSec=10
+Environment=PYTHONUNBUFFERED=1
 StandardOutput=append:$ROOT/logs/qq-bridge.log
 StandardError=append:$ROOT/logs/qq-bridge.log
 
@@ -274,7 +277,8 @@ StandardError=append:$ROOT/logs/watchdog.log
 WantedBy=multi-user.target
 UNIT
 mkdir -p "$ROOT/tmp"
-pkill -9 -f "main.py" 2>/dev/null || true
+pkill -9 -f "main_nb.py" 2>/dev/null || true
+pkill -9 -f "main\.py" 2>/dev/null || true
 sleep 2
 systemctl daemon-reload
 systemctl enable --now qqbridge qqbridge-watchdog

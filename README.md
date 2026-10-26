@@ -35,7 +35,25 @@
 
 ---
 
-## 安装
+## 部署（两条线，都有一键脚本）
+
+| 场景 | 一键入口 | 文档 |
+|---|---|---|
+| **A. Windows 本地**（QQ 登录在这台电脑） | `powershell -File deploy.ps1 -ZipPath D:\qq-bridge-full.zip -TicketPath D:\ticket.yaml` | [docs/部署②-Windows本地.md](docs/部署②-Windows本地.md) |
+| **B. Linux 服务器 / 阿里云**（24h 在线） | `QQ=... USERS=... bash <(curl -fsSL .../deploy-linux.sh)` | [docs/部署①-Linux服务器-阿里云.md](docs/部署①-Linux服务器-阿里云.md) |
+| 远程代装（发给客户的 AI 自己跑） | 把任务单发过去 | **[docs/任务单-AI部署.md](docs/任务单-AI部署.md)** |
+| 自己远程操作别人电脑 | 同上，照着操作手一页纸 | [docs/远程代装-操作手一页纸.md](docs/远程代装-操作手一页纸.md) |
+
+打包给别人（自动剔除 `config.yaml` / `nb.env` / `data/` / `logs/` / `.venv` / `napcat/`）：
+
+```bash
+.venv\Scripts\python.exe tools\make_dist.py --all --with-assets --with-napcat
+# → dist/qq-bridge-code.zip（0.3MB，Linux 用）、dist/qq-bridge-full.zip（59MB，Windows 用）
+```
+
+---
+
+## 安装（手动双击版）
 
 1. 下载本仓库（Code → Download ZIP）并解压到任意目录，路径别带特殊符号。
 2. 双击 **`安装.bat`**，等它跑完（约 2-3 分钟）。
@@ -53,6 +71,8 @@
 ```
 
 12 项全绿即为交付状态（含模型连通性、QQ 连接、白名单、记忆库、掉线监控）。
+
+机器人里发 `/nb` 能看到当前框架版本、连接数、处理器数量（确认 NoneBot2 在跑）。
 
 ---
 

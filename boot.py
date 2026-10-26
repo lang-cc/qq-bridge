@@ -58,9 +58,13 @@ def start_napcat() -> None:
         return
     bat = ROOT / "napcat" / "launcher-user-silent.bat"
     if bat.exists():
-        subprocess.Popen(["cmd", "/c", str(bat), "-q", "1126449714"],
-                         cwd=str(ROOT / "napcat"), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        log.info("NapCat 启动中…")
+        from qqbot.account import bot_account, napcat_launch_args
+
+        account = bot_account(ROOT)
+        cmd = ["cmd", "/c", str(bat), *napcat_launch_args(account)]
+        subprocess.Popen(cmd, cwd=str(ROOT / "napcat"),
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        log.info("NapCat 启动中…（账号 %s）", account or "未指定")
 
 
 def ensure_watchdog() -> None:

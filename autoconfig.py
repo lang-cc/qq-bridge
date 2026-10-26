@@ -195,6 +195,7 @@ def main(argv=None) -> int:
     cfg = {}
     if cfg_path.exists():
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    cfg["bot_qq"] = qq  # 启动脚本（boot/watchdog/login_qr）读它去静默登录，不写死在代码里
     ar = cfg.setdefault("autoreply", {})
     llm = ar.setdefault("llm", {})
     llm.update({"enabled": True, "base_url": str(api["base_url"]).strip(),
@@ -261,6 +262,7 @@ def main(argv=None) -> int:
     print("\n下一步：")
     print("  1) 启动：.venv\\Scripts\\pythonw.exe boot.py   （需要扫码时会自动弹二维码）")
     print("  2) 验收：.venv\\Scripts\\python.exe selfcheck.py")
+    print("  3) 框架：机器人里发 /nb 看跑的是不是 NoneBot2")
     return 0
 
 

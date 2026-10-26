@@ -57,12 +57,61 @@ def _attach_nonebot_file_log() -> None:
     )
 
 
+def _env_defaults(cfg) -> dict[str, str]:
+    """按 config.yaml 算出框架层该有的配置项（端口跟老版一致：8199）。"""
+    ob = cfg.section("onebot11") or {}
+    rev = ob.get("reverse") or {}
+    return {
+        "DRIVER": "~fastapi",
+        "HOST": str(rev.get("host") or "127.0.0.1"),
+        "PORT": str(rev.get("port") or 8199),
+        "LOG_LEVEL": cfg.log_level,
+        "DEBUG": "false",
+        "ONEBOT_ACCESS_TOKEN": str(ob.get("access_token") or ""),
+        "COMMAND_START": '["/"]',
+        "COMMAND_SEP": '["."]',
+    }
+
+
+def ensure_env_file(path: Path, cfg) -> None:
+    """nb.env 不存在就生成；存在就补齐缺的键（老包装上新版也不会缺配置）。
+
+    用户已经填过的值一律保留，只补缺、不覆盖。
+    """
+    wanted = _env_defaults(cfg)
+    existing: dict[str, str] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, _, v = s.partition("=")
+            existing[k.strip()] = v.strip()
+
+    merged = {k: existing.get(k, v) for k, v in wanted.items()}
+    extras = {k: v for k, v in existing.items() if k not in wanted}
+    already_ok = path.exists() and not extras and all(existing.get(k) == v for k, v in wanted.items())
+    if already_ok:
+        return
+
+    lines = [
+        "# NoneBot2 运行配置：main_nb.py 首次启动时自动生成，之后只补缺不覆盖",
+        "# 端口跟老版一致（8199 给 NapCat 反向 WS）；改完要重启服务",
+        "",
+    ]
+    lines += [f"{k}={v}" for k, v in merged.items()]
+    if extras:
+        lines += ["", "# 额外自定义项"] + [f"{k}={v}" for k, v in extras.items()]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     cfg = load_config(ROOT / "config.yaml")
     setup_logging(cfg.log_level)          # logs/qq-bridge.log，跟以前一样的日志位置
     _attach_nonebot_file_log()
 
-    # 读根目录 nb.env：DRIVER=~fastapi / HOST / PORT / token（文件名避开 .env，本机安全策略不让写）
+    # 读根目录 nb.env（没有就按 config.yaml 生成；文件名避开 .env，本机安全策略不让写）
+    ensure_env_file(ROOT / "nb.env", cfg)
     nonebot.init(_env_file=str(ROOT / "nb.env"))
     driver = nonebot.get_driver()
     driver.register_adapter(OneBot11Adapter)
@@ -89,11 +138,12 @@ def main() -> None:
             api = HttpApi(legacy_bridge.SHIM, api_cfg)
             await api.start()
             holder["api"] = api
+        nbc = nonebot.get_driver().config
         log.info(
             "服务已启动｜框架 nonebot2 %s｜反向 WS %s:%s｜本机接口 http://%s:%s",
             nonebot.__version__,
-            os.getenv("HOST", "127.0.0.1"),
-            os.getenv("PORT", "8199"),
+            nbc.host,
+            nbc.port,
             api_cfg.get("host", "127.0.0.1"),
             api_cfg.get("port", 8088),
         )
@@ -105,7 +155,11 @@ def main() -> None:
             await api.stop()
         log.info("服务已关闭")
 
-    nonebot.run()
+    try:
+        nonebot.run()
+    except OSError as exc:
+        log.error("启动失败：端口可能被占用（%s）。先停掉旧实例再试。", exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

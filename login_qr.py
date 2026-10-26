@@ -26,7 +26,11 @@ WEBUI_PORT = 6099
 ACTION_PORT = 3000
 API_PORT = 8088
 DEBUG_PORT = 9333
-ACCOUNT = "1126449714"
+
+sys.path.insert(0, str(ROOT))
+from qqbot.account import bot_account, napcat_launch_args  # noqa: E402
+
+ACCOUNT = bot_account(ROOT)  # 不写死 QQ 号，打包给别人也能用
 
 
 def port_open(port: int, host: str = "127.0.0.1") -> bool:
@@ -68,7 +72,8 @@ def start_napcat() -> bool:
     if not bat.exists():
         say(f"找不到 {bat}")
         return False
-    subprocess.Popen(["cmd", "/c", str(bat), "-q", ACCOUNT], cwd=str(ROOT / "napcat"),
+    subprocess.Popen(["cmd", "/c", str(bat), *napcat_launch_args(ACCOUNT)],
+                     cwd=str(ROOT / "napcat"),
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     for _ in range(60):
         if port_open(WEBUI_PORT):
