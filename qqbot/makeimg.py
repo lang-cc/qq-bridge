@@ -12,8 +12,22 @@ from pathlib import Path
 
 log = logging.getLogger("qqbot.makeimg")
 
-FONT_BOLD = "C:/Windows/Fonts/msyhbd.ttc"
-FONT_NORMAL = "C:/Windows/Fonts/msyh.ttc"
+FONT_CANDIDATES_BOLD = (
+    "C:/Windows/Fonts/msyhbd.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+)
+FONT_CANDIDATES_NORMAL = (
+    "C:/Windows/Fonts/msyh.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+)
 STICKER_DIR = Path("stickers")
 OUT_DIR = Path("tmp/img")
 
@@ -21,11 +35,17 @@ OUT_DIR = Path("tmp/img")
 def _font(size: int, bold: bool = True):
     from PIL import ImageFont
 
-    for path in ((FONT_BOLD, FONT_NORMAL) if bold else (FONT_NORMAL, FONT_BOLD)):
+    order = (
+        FONT_CANDIDATES_BOLD + FONT_CANDIDATES_NORMAL
+        if bold
+        else FONT_CANDIDATES_NORMAL + FONT_CANDIDATES_BOLD
+    )
+    for path in order:
         try:
             return ImageFont.truetype(path, size)
         except Exception:
             continue
+    log.warning("没找到中文字体，图上文字可能显示成方块")
     return ImageFont.load_default()
 
 
