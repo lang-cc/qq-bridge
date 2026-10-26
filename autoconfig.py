@@ -53,6 +53,15 @@ POLISH_ASK = """把下面这些要点写成一段中文人格设定，第二人�
 {notes}
 只输出这段话本身，不要任何解释。"""
 
+# 客户没给性格时的兜底人格（够自然，不油腻，也不像客服）
+DEFAULT_PERSONA = {
+    "name": "小柚",
+    "age": 22,
+    "who": "在写字楼上班，做的是普通的文职",
+    "style": "短句、口语，爱用「嗯」「哈哈」「嘛」，被人逗会损回去，不装可爱也不冷淡",
+    "relation": "认识一段时间的朋友，聊得来，但还没到无话不说",
+}
+
 
 def _head(persona: dict) -> str:
     name = str(persona.get("name") or "小柚").strip()
@@ -136,16 +145,32 @@ def main(argv=None) -> int:
 
     robot = ticket.get("robot") or {}
     api = ticket.get("api") or {}
-    persona = ticket.get("persona") or {}
+    persona = dict(ticket.get("persona") or {})
     tuning = ticket.get("tuning") or {}
-    users = [str(u).strip() for u in (ticket.get("allow") or []) if str(u).strip()]
+    group_cfg = ticket.get("group") or {}
+
+    # 没给的字段用兜底人格补齐（客户"没有性格"也能跑得自然）
+    for k, v in DEFAULT_PERSONA.items():
+        if not str(persona.get(k) or "").strip():
+            persona[k] = v
+
+    # allow 支持两种写法：
+    #   allow: ["20002"]                                   → 只私聊
+    #   allow: {users: ["20002"], groups: ["123456789"]}    → 私聊 + 群聊
+    allow_raw = ticket.get("allow") or []
+    if isinstance(allow_raw, dict):
+        users = [str(u).strip() for u in (allow_raw.get("users") or []) if str(u).strip()]
+        groups = [str(g).strip() for g in (allow_raw.get("groups") or []) if str(g).strip()]
+    else:
+        users = [str(u).strip() for u in allow_raw if str(u).strip()]
+        groups = [str(g).strip() for g in (ticket.get("groups") or []) if str(g).strip()]
     qq = str(robot.get("qq") or "").strip()
 
     problems = []
     if not qq:
         problems.append("robot.qq 没填（机器人 QQ 号）")
-    if not users:
-        problems.append("allow 没填（至少一个允许聊天的 QQ 号）")
+    if not users and not groups:
+        problems.append("allow 没填（至少一个允许聊天的 QQ 号或群号）")
     for k in ("base_url", "api_key", "model"):
         if not str(api.get(k) or "").strip():
             problems.append(f"api.{k} 没填")
@@ -174,10 +199,15 @@ def main(argv=None) -> int:
     llm = ar.setdefault("llm", {})
     llm.update({"enabled": True, "base_url": str(api["base_url"]).strip(),
                 "api_key": str(api["api_key"]).strip(), "model": str(api["model"]).strip()})
-    ar["whitelist"] = {"enabled": True, "users": users, "groups": []}
+    ar["whitelist"] = {"enabled": True, "users": users, "groups": groups}
+    if groups:
+        ar["reply_group"] = True
+        ar["group_at_only"] = bool(group_cfg.get("at_only", True))
+        ar["group_reply_probability"] = float(group_cfg.get("probability") or 1.0)
     pro = ar.setdefault("proactive", {})
+    targets = [f"u{u}" for u in users] + [f"g{g}" for g in groups]
     pro.update({"enabled": bool(tuning.get("proactive_min_minutes", 1)),
-                "targets": [f"u{u}" for u in users],
+                "targets": targets,
                 "min_minutes": int(tuning.get("proactive_min_minutes") or 45),
                 "max_minutes": int(tuning.get("proactive_max_minutes") or 180),
                 "max_per_day": int(tuning.get("proactive_max_per_day") or 6)})
@@ -201,7 +231,11 @@ def main(argv=None) -> int:
 
     print("\n===== 将写入的配置 =====")
     print(f"机器人 QQ    : {qq}")
-    print(f"允许聊天     : {', '.join(users)}")
+    print(f"私聊白名单   : {', '.join(users) if users else '(无)'}")
+    print(f"群白名单     : {', '.join(groups) if groups else '(无)'}")
+    if groups:
+        print(f"群里怎么回   : {'只在被@时回' if ar.get('group_at_only') else '会主动插话'}"
+              f"（概率 {ar.get('group_reply_probability')}）")
     print(f"城市         : {ticket.get('city') or '(不报天气)'}")
     print(f"模型         : {api['model']} @ {api['base_url']}")
     print(f"密钥         : {str(api['api_key'])[:8]}…{str(api['api_key'])[-4:]}")
