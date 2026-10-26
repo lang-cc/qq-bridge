@@ -21,10 +21,12 @@ from datetime import datetime
 from .. import life as life_mod
 from .. import mood as mood_mod
 from .. import web_tools
+from ..message import at as seg_at
 from ..message import face as seg_face
 from ..message import image as seg_image
 from ..message import link as seg_link
 from ..message import record as seg_record
+from ..message import text as seg_text
 from ..personas import PersonaStore
 from ..stickers import Stickers, random_face
 
@@ -99,6 +101,17 @@ VIDEO_HINTS = ("视频", "b站", "bilibili", "抖音", "看看", "推荐个", "�
 HOT_HINTS = ("热门", "热搜", "最近火", "排行榜")
 SEARCH_HINTS = ("搜一下", "查一下", "是什么", "为什么", "怎么了", "真的假的", "新闻")
 
+# 没人理她时，她自己找事说的几种由头（轮着来，避免天天一样）
+PROACTIVE_INTENTS = (
+    "说说你此刻正在干什么，具体到一件小事（比如刚洗完澡、在啃苹果、作业写不下去）",
+    "抱怨一句现在的状态：无聊、饿、困、课太多、手机快没电",
+    "突然想起跟对方有关的一件小事，顺口提一句或问一句",
+    "分享你刚刷到的、让你笑了一下或者无语的东西",
+    "自言自语地感慨一句，不指望马上有人接",
+    "说一句你现在特别想干的事（想吃火锅、想睡觉、想出去玩）",
+    "吐槽一下天气或者宿舍/教室里的破事",
+)
+
 REFLECT_PROMPT = """下面是你和对方的最近对话。请总结并只输出 JSON（不要代码块、不要解释）：
 {"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"]}
 traits 取 0-1，表示你目前的性格倾向。important 只放真正重要的事（约定、家人、健康、重要日期、矛盾与和解），没有就给空数组。"""
@@ -135,6 +148,7 @@ class Companion:
         self._usage = None
         self._video_today: dict[str, int] = {}
         self._sent_today: dict[str, int] = {}
+        self._rosters: dict[str, tuple[float, dict[str, str]]] = {}
         self._day = time.strftime("%Y-%m-%d")
 
     # ------------------------------------------------------------ 配置/资源
@@ -260,10 +274,19 @@ class Companion:
         if traits:
             shown = "，".join(f"{k} {v}" for k, v in list(traits.items())[:6])
             parts.append(f"你的性格倾向（0-1，越高越明显）：{shown}。")
-        parts.append(
-            "输出要求：只回一两句话（≤25字），口语，不用 markdown/列表/总结，不说自己是 AI。"
-            "想发表情包就在末尾加 [表情]；需要分享链接时把 URL 直接写进回复。"
-        )
+        if llm.get("multi_line"):
+            parts.append(
+                "输出要求：回 1-3 条短消息，每条 ≤25 字，条与条之间用换行分隔；"
+                "口语、活泼，不用 markdown/列表/总结，不说自己是 AI。"
+                "大多数时候只说话、不要配图；十次里顶多一两次才在末尾加 [表情]。"
+                "需要分享链接时把 URL 直接写进回复。"
+            )
+        else:
+            parts.append(
+                "输出要求：只回一两句话（≤25字），口语，不用 markdown/列表/总结，不说自己是 AI。"
+                "大多数时候只说话、不要配图；十次里顶多一两次才在末尾加 [表情]。"
+                "需要分享链接时把 URL 直接写进回复。"
+            )
         return "\n".join(p for p in parts if p)
 
     def _system_prompt_for(self, chat_id: str) -> str:
@@ -279,6 +302,24 @@ class Companion:
         diary = mem.kv_get(chat_id, "diary_last")
         if diary:
             extra.append(f"你昨晚睡前写的日记（只有你自己知道，可以偶尔流露出这个心情）：{diary}")
+        # 跟这个人单独的关系（好感度按人分开记）
+        try:
+            cur = float(mem.kv_get(chat_id, "intimacy", "") or 0)
+            tier_name, tier_hint = life_mod.tier_of(cur)
+            extra.append(f"你跟当前这个人单独的关系：{tier_name}（好感度 {cur:.0f}/1000）。{tier_hint}")
+        except Exception:
+            pass
+        # 群里都有谁（可以点名 @）
+        gm = re.match(r"^g(\d+)", chat_id or "")
+        if gm:
+            roster = (self._rosters.get(gm.group(1)) or (0, {}))[1]
+            names = [n for n in dict.fromkeys(roster.keys()) if n][:25]
+            if names:
+                extra.append(
+                    "群里这些人你认识：" + "、".join(names) +
+                    "。想叫谁就写「@昵称」，会自动变成真的 @ 提醒；"
+                    "但只在确实想跟某人说话时才 @，不要每条都 @，也不要乱 @ 不存在的名字。"
+                )
         return "\n".join([base] + extra)
 
     # ------------------------------------------------------------ 旧事回忆
@@ -359,12 +400,66 @@ class Companion:
             parts = parts[: limit - 1] + ["".join(parts[limit - 1 :])]
         return parts
 
+    # ------------------------------------------------------------ 群成员 / @
+    async def _ensure_roster(self, gid, ttl: float = 900.0) -> dict[str, str]:
+        """取群成员 昵称 -> QQ 的映射，缓存 15 分钟。"""
+        if gid is None:
+            return {}
+        key = str(gid)
+        hit = self._rosters.get(key)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+        mapping: dict[str, str] = {}
+        try:
+            res = await self.bot.call_api("get_group_member_list", group_id=int(gid))
+            data = res.get("data") if isinstance(res, dict) else None
+            for m in data or []:
+                if not isinstance(m, dict):
+                    continue
+                name = str(m.get("card") or m.get("nickname") or "").strip()
+                qq = str(m.get("user_id") or "").strip()
+                if not name or not qq:
+                    continue
+                mapping[name] = qq
+                mapping.setdefault(name.replace(" ", ""), qq)
+        except Exception as exc:
+            log.debug("取群成员失败：%r", exc)
+        self._rosters[key] = (time.time(), mapping)
+        if mapping:
+            log.info("群 %s 成员 %d 人已缓存（可 @）", key, len(set(mapping.values())))
+        return mapping
+
+    def _compose(self, text: str, gid) -> Any:
+        """把「@昵称」换成真正的 @ 提醒。认不出昵称就原样发文字。"""
+        roster = (self._rosters.get(str(gid)) or (0, {}))[1] if gid is not None else {}
+        if not roster:
+            return text
+        segs: list[dict] = []
+        pos = 0
+        hit = False
+        for m in re.finditer(r"@([^\s@，。,.！!？?：:；;~～]{1,20})", text or ""):
+            name = m.group(1)
+            qq = roster.get(name) or roster.get(name.replace(" ", ""))
+            if not qq:
+                continue
+            if m.start() > pos:
+                segs.append(seg_text(text[pos:m.start()]))
+            segs.append(seg_at(qq))
+            segs.append(seg_text(" "))
+            pos = m.end()
+            hit = True
+        if not hit:
+            return text
+        if pos < len(text):
+            segs.append(seg_text(text[pos:]))
+        return segs
+
     async def _send_text(self, event, text: str, limit: int | None = None, typing_scale: float = 1.0) -> None:
         gap = (self.cfg.get("split") or {}).get("gap_ms") or [500, 1500]
         segs = self._split(text, limit=limit)
         for i, seg in enumerate(segs):
             await self._type_delay(seg, scale=typing_scale)
-            await self.bot.reply(event, seg)
+            await self.bot.reply(event, self._compose(seg, getattr(event, "group_id", None)))
             if i < len(segs) - 1:
                 await asyncio.sleep(random.uniform(gap[0], gap[1]) / 1000)
 
@@ -625,7 +720,15 @@ class Companion:
         if not self._target_ok(event):
             return False
 
-        chat_id = f"g{event.group_id}" if event.group_id is not None else f"u{event.user_id}"
+        # 群里每个人单独一份记忆和好感度：g<群号>_u<QQ号>
+        if event.group_id is not None:
+            if event.user_id:
+                chat_id = f"g{event.group_id}_u{event.user_id}"
+            else:
+                chat_id = f"g{event.group_id}"
+            await self._ensure_roster(event.group_id)
+        else:
+            chat_id = f"u{event.user_id}"
         text = (event.command_text or event.message or "").strip()
         if not text:
             # 只发了个图：有一半概率吱一声，像真人那样
@@ -1049,7 +1152,8 @@ class Companion:
             _pid, persona, mem = self._ctx(chat_id)
             if self._sent_today.get(chat_id, 0) >= cap:
                 continue
-            if time.time() - mem.last_ts(chat_id) < 20 * 60:
+            min_gap = float(p.get("min_gap_seconds") or 1200)
+            if min_gap and time.time() - mem.last_ts(chat_id) < min_gap:
                 continue
 
             context = ""
@@ -1069,8 +1173,9 @@ class Companion:
                         context = (context + "\n" if context else "") + "今天天气：" + wline
 
             ask = (
-                f"现在是 {datetime.now().strftime('%H:%M')}，你已经很久没跟对方说话了。"
-                "结合你记得的事，主动找对方聊一句（可以问一句或分享一件事），不超过 20 字。"
+                f"现在是 {datetime.now().strftime('%H:%M')}，群里没人说话，你自己找点事开口。"
+                f"{random.choice(PROACTIVE_INTENTS)}。"
+                "回 1-2 条短消息，每条不超过 25 字，不要说「在吗」这种空话，不要重复最近说过的话。"
             )
             if context:
                 ask += "可以顺手分享一个 B 站视频链接。"

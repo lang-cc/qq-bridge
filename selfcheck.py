@@ -105,10 +105,16 @@ def check() -> list[dict]:
     # 8 QQ 连接
     add("QQ 已连接", bool(st.get("connected")), f"账号 {st.get('self_id') or '(未登录)'}",
         "面板 →「扫码登录」")
-    # 9 白名单
+    # 9 白名单（人 或 群 有一个就算通过）
     wl = ar.get("whitelist") or {}
     users = [u for u in (wl.get("users") or []) if str(u).strip()]
-    add("白名单", bool(users), f"{len(users)} 个 QQ：{', '.join(map(str, users[:3]))}",
+    groups = [g for g in (wl.get("groups") or []) if str(g).strip()]
+    desc_parts = []
+    if users:
+        desc_parts.append(f"{len(users)} 个 QQ：{', '.join(map(str, users[:3]))}")
+    if groups:
+        desc_parts.append(f"{len(groups)} 个群：{', '.join(map(str, groups[:3]))}")
+    add("白名单", bool(users or groups), "；".join(desc_parts) or "空",
         "没填白名单则所有人都不回")
     # 10 记忆库
     mem = ROOT / "data" / "personas"
