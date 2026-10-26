@@ -47,3 +47,6 @@ bilibili_video_screenshot.png
 config.yaml.bak
 
 dist/
+
+# 框架运行配置（含 token）
+nb.env

@@ -15,6 +15,7 @@ import logging
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -36,16 +37,30 @@ _single: socket.socket | None = None
 
 
 def acquire_single() -> bool:
-    """靠绑定本地端口保证只有一个看门狗。"""
+    """靠绑定本地端口保证只有一个看门狗。
+
+    注意：这个锁端口是给自检 / 面板探活用（连得上=看门狗在跑），
+    所以必须有人 accept，否则 backlog 被占满后别人就再也连不上（误报"未运行"）。
+    """
     global _single
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.bind(("127.0.0.1", LOCK_PORT))
-        s.listen(1)
+        s.listen(16)
     except OSError:
         s.close()
         return False
     _single = s
+
+    def _accept_forever() -> None:
+        while True:
+            try:
+                conn, _ = s.accept()
+                conn.close()
+            except Exception:
+                return
+
+    threading.Thread(target=_accept_forever, name="lock-accept", daemon=True).start()
     return True
 
 
@@ -66,7 +81,7 @@ def connected() -> bool:
 def start_service() -> None:
     pyw = ROOT / ".venv" / "Scripts" / "pythonw.exe"
     exe = pyw if pyw.exists() else sys.executable
-    subprocess.Popen([str(exe), "main.py"], cwd=str(ROOT), close_fds=True)
+    subprocess.Popen([str(exe), "main_nb.py"], cwd=str(ROOT), close_fds=True)
     log.info("已拉起服务")
 
 

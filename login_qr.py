@@ -184,7 +184,7 @@ def ensure_bot() -> None:
     say("拉起 qq-bridge 服务…")
     pyw = ROOT / ".venv" / "Scripts" / "pythonw.exe"
     if pyw.exists():
-        subprocess.Popen([str(pyw), "main.py"], cwd=str(ROOT), close_fds=True)
+        subprocess.Popen([str(pyw), "main_nb.py"], cwd=str(ROOT), close_fds=True)
         for _ in range(30):
             if port_open(API_PORT):
                 say("服务已启动")

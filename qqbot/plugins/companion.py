@@ -21,6 +21,7 @@ from datetime import datetime
 from .. import life as life_mod
 from .. import mood as mood_mod
 from .. import web_tools
+from ..api_result import unwrap
 from ..message import at as seg_at
 from ..message import face as seg_face
 from ..message import image as seg_image
@@ -412,7 +413,9 @@ class Companion:
         mapping: dict[str, str] = {}
         try:
             res = await self.bot.call_api("get_group_member_list", group_id=int(gid))
-            data = res.get("data") if isinstance(res, dict) else None
+            data = unwrap(res) if isinstance(res, (dict, list)) else None
+            if isinstance(data, dict):  # 少数协议端会包成 {"list": [...]}
+                data = data.get("list") or data.get("data") or []
             for m in data or []:
                 if not isinstance(m, dict):
                     continue

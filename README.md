@@ -4,6 +4,10 @@
 
 本地跑（NapCat + OneBot v11），不依赖任何云服务，聊天只走你自己的模型接口。
 
+运行框架：**NoneBot2**（`nonebot2` + `nonebot-adapter-onebot`）。启动入口 `main_nb.py`，
+端口没变（8199 给 NapCat 反向 WS，8088 给本机接口/面板）。细节见
+[`docs/运行框架-NoneBot2.md`](docs/运行框架-NoneBot2.md)。旧的 `main.py`（自研适配器）保留可随时回滚。
+
 ---
 
 ## 它能做什么

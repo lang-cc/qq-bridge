@@ -71,9 +71,10 @@ class Router:
 
         return deco
 
-    async def dispatch(self, bot: Any, event: Any) -> None:
+    async def dispatch(self, bot: Any, event: Any) -> bool:
+        """返回 True 表示已有处理器消化掉这条消息（框架层据此停止往下传）。"""
         if event.type != "message":
-            return
+            return False
         text = _AT_PREFIX.sub("", event.message or "").strip()
         event.command_text = text
         for h in list(self.handlers):
@@ -81,6 +82,7 @@ class Router:
                 continue
             try:
                 if await h.fn(bot, event) is True:
-                    return
+                    return True
             except Exception:  # 单个插件炸掉不影响其他插件
                 log.exception("插件处理异常: %s", h.plugin)
+        return False

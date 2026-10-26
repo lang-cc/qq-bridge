@@ -14,6 +14,8 @@ import logging
 import urllib.parse
 import urllib.request
 
+from .api_result import unwrap
+
 log = logging.getLogger("qqbot.qzone")
 
 PUBLISH_URL = (
@@ -53,7 +55,7 @@ async def fetch_cookies(bot, domain: str = "user.qzone.qq.com") -> dict[str, str
     except Exception as exc:
         log.error("取 cookie 失败：%r", exc)
         return {}
-    data = res.get("data") if isinstance(res, dict) else None
+    data = unwrap(res) if isinstance(res, dict) else None
     raw = (data or {}).get("cookies") if isinstance(data, dict) else None
     return parse_cookies(raw or "")
 

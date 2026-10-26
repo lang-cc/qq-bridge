@@ -48,7 +48,7 @@ def start_service() -> None:
         return
     pyw = ROOT / ".venv" / "Scripts" / "pythonw.exe"
     exe = pyw if pyw.exists() else sys.executable
-    subprocess.Popen([str(exe), "main.py"], cwd=str(ROOT), close_fds=True)
+    subprocess.Popen([str(exe), "main_nb.py"], cwd=str(ROOT), close_fds=True)
     log.info("服务启动中…")
 
 

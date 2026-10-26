@@ -3,3 +3,8 @@ aiohttp>=3.9
 PyYAML>=6
 Pillow>=10
 edge-tts>=6.1
+# ---- NoneBot2 框架层（main_nb.py 用；旧 main.py 不需要）----
+nonebot2>=2.4
+nonebot-adapter-onebot>=2.4
+fastapi>=0.100
+uvicorn>=0.20
