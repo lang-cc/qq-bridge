@@ -616,13 +616,16 @@ class HttpApi:
     # 桌面面板删掉之后，扫码登录 / 掉线自愈 / 重启 / 备份 都收到网页配置台上。
     @staticmethod
     def _python_exe(windowless: bool = True):
-        """优先用 .venv 里的 python（pythonw 无窗口）。"""
+        """优先用 .venv 里的 python（Windows 用 pythonw 免窗口，Linux 用 bin/python）。"""
         from pathlib import Path
 
         root = Path(__file__).resolve().parent.parent
-        cand = root / ".venv" / "Scripts" / ("pythonw.exe" if windowless else "python.exe")
-        if cand.exists():
-            return str(cand)
+        win = root / ".venv" / "Scripts" / ("pythonw.exe" if windowless else "python.exe")
+        if win.exists():
+            return str(win)
+        posix = root / ".venv" / "bin" / "python"
+        if posix.exists():
+            return str(posix)
         return sys.executable
 
     @staticmethod
