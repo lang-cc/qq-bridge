@@ -1,7 +1,8 @@
 """说话：edge-tts 合成 → silk → QQ 语音条。
 
-edge-tts 用的是微软 Edge 的在线语音，不要 key、中文音色自然。
-断网/被墙时返回 None，调用方退回文字，不影响聊天。
+正常走 edge-tts（微软 Edge 在线语音，不要 key、中文音色自然）；
+国内经常被 reset，则依次降级：百度翻译 TTS → 本机系统语音（SAPI）。
+三层都失败才退回文字，不影响聊天。
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 log = logging.getLogger("qqbot.tts")
 
@@ -85,6 +87,44 @@ async def synth(text: str, voice: str = "zh-CN-XiaoyiNeural", rate: str = "+0%",
         log.warning("TTS 产出为空：%s", dest)
         return None
     log.info("TTS 合成完成：%s（%d 字，%d KB）", dest.name, len(text), dest.stat().st_size // 1024)
+    return str(dest)
+
+
+async def baidu_synth(text: str) -> str | None:
+    """百度翻译的免费 TTS（无需密钥），音质比系统离线语音自然。
+
+    edge-tts 的 speech.platform.bing.com 在国内会被 reset 时用这条顶上。
+    """
+    import aiohttp
+
+    text = (text or "").strip()
+    if not text:
+        return None
+    # 接口对长文本不友好，语音条本来就短，截一下
+    text = text[:180]
+    out_dir = Path("tmp")
+    out_dir.mkdir(exist_ok=True)
+    dest = out_dir / f"baidu-{int(time.time())}-{uuid.uuid4().hex[:6]}.mp3"
+    url = (
+        "https://fanyi.baidu.com/gettts?lan=zh&spd=5&source=web&text="
+        + quote(text)
+    )
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=25)) as r:
+                if r.status != 200:
+                    log.warning("百度 TTS 返回 %s", r.status)
+                    return None
+                raw = await r.read()
+    except Exception as exc:
+        log.warning("百度 TTS 失败：%r", exc)
+        return None
+    if len(raw) < 3000:
+        log.warning("百度 TTS 音频过小：%d bytes", len(raw))
+        return None
+    dest.write_bytes(raw)
+    log.info("百度 TTS 合成完成：%s（%d 字，%d KB）", dest.name, len(text), len(raw) // 1024)
     return str(dest)
 
 
@@ -168,10 +208,14 @@ async def speak(text: str, voice: str = "zh-CN-XiaoyiNeural", cfg: dict | None =
     if not mp3:
         mp3 = await synth(text, voice=cfg.get("voice") or voice)
     if not mp3:
-        # edge 被掐时的离线兜底：系统自带语音，音质差但能发
+        # edge 被掐：先用百度翻译的免费语音（音质接近），不行再退系统离线语音
+        mp3 = await baidu_synth(text)
+        if mp3:
+            log.info("edge-tts 不可用，改用百度 TTS")
+    if not mp3:
         mp3 = await asyncio.to_thread(sapi_synth, text)
         if mp3:
-            log.info("edge-tts 不可用，改用本机离线语音")
+            log.info("在线 TTS 都不可用，改用本机离线语音")
     if not mp3:
         return None
     silk = await to_silk(mp3)
