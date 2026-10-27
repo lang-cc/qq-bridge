@@ -90,6 +90,50 @@ async def synth(text: str, voice: str = "zh-CN-XiaoyiNeural", rate: str = "+0%",
     return str(dest)
 
 
+async def aliyun_synth(text: str, api_key: str, voice: str = "Cherry", model: str = "qwen3-tts-flash") -> str | None:
+    """阿里云百炼语音合成（Qwen-TTS / CosyVoice），国内直连、音质接近真人。"""
+    import aiohttp
+
+    text = (text or "").strip()
+    if not text:
+        return None
+    text = text[:600]  # 接口上限 600 字
+    out_dir = Path("tmp")
+    out_dir.mkdir(exist_ok=True)
+    url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+    payload = {
+        "model": model,
+        "input": {"text": text, "voice": voice, "language_type": "Chinese"},
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        # 网关对裸请求比较挑，带上 SDK 标识更稳
+        "x-dashscope-sdk-client": "python-sdk/2.0.1/audio2",
+    }
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, json=payload, headers=headers,
+                              timeout=aiohttp.ClientTimeout(total=40)) as r:
+                body = await r.json(content_type=None)
+            audio_url = (((body or {}).get("output") or {}).get("audio") or {}).get("url")
+            if not audio_url:
+                log.warning("阿里云 TTS 没返回音频：%s", str(body)[:200])
+                return None
+            async with s.get(audio_url, timeout=aiohttp.ClientTimeout(total=40)) as r2:
+                raw = await r2.read()
+    except Exception as exc:
+        log.warning("阿里云 TTS 失败：%r", exc)
+        return None
+    if len(raw) < 3000:
+        log.warning("阿里云 TTS 音频过小：%d bytes", len(raw))
+        return None
+    dest = out_dir / f"aliyun-{int(time.time())}-{uuid.uuid4().hex[:6]}.wav"
+    dest.write_bytes(raw)
+    log.info("阿里云 TTS 合成完成：%s（%d 字，%d KB，%s）", dest.name, len(text), len(raw) // 1024, voice)
+    return str(dest)
+
+
 async def baidu_synth(text: str) -> str | None:
     """百度翻译的免费 TTS（无需密钥），音质比系统离线语音自然。
 
@@ -182,12 +226,29 @@ async def to_silk(mp3: str) -> str:
 
 
 async def speak(text: str, voice: str = "zh-CN-XiaoyiNeural", cfg: dict | None = None) -> str | None:
-    """一句话直接给出可发送的 silk 路径。cfg 里有 provider 就按其走。"""
+    """一句话直接给出可发送的 silk 路径。
+
+    优先级：阿里云（有 key 时）→ 火山（provider=volc）→ edge-tts → 百度 → 本机离线。
+    任何一层挂了自动往下走，保证语音不断。
+    """
     cfg = cfg or {}
     provider = (cfg.get("provider") or "edge").lower()
+    api_key = str(cfg.get("api_key") or "").strip()
     mp3: str | None = None
 
-    if provider == "volc":
+    # 1) 阿里云百炼（音质最好，国内直连）
+    if api_key and provider in ("aliyun", "qwen", "bailian", "edge", "auto"):
+        mp3 = await aliyun_synth(
+            text,
+            api_key,
+            voice=str(cfg.get("voice") or "Cherry"),
+            model=str(cfg.get("model") or "qwen3-tts-flash"),
+        )
+        if mp3:
+            log.info("语音走阿里云（%s）", cfg.get("voice") or "Cherry")
+
+    # 2) 火山引擎（要 appid + token）
+    if not mp3 and provider == "volc":
         raw = await volc_synth(
             text,
             str(cfg.get("appid") or ""),
@@ -205,13 +266,15 @@ async def speak(text: str, voice: str = "zh-CN-XiaoyiNeural", cfg: dict | None =
         else:
             log.info("火山 TTS 不可用，退回 edge")
 
+    # 3) edge-tts（微软在线语音）
     if not mp3:
         mp3 = await synth(text, voice=cfg.get("voice") or voice)
+    # 4) 百度翻译（免费，音质一般但通）
     if not mp3:
-        # edge 被掐：先用百度翻译的免费语音（音质接近），不行再退系统离线语音
         mp3 = await baidu_synth(text)
         if mp3:
-            log.info("edge-tts 不可用，改用百度 TTS")
+            log.info("改用百度 TTS 兜底")
+    # 5) 本机离线语音（最后一道）
     if not mp3:
         mp3 = await asyncio.to_thread(sapi_synth, text)
         if mp3:
