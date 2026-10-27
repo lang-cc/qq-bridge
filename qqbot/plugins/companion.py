@@ -18,6 +18,7 @@ import re
 import time
 from datetime import datetime
 
+from .. import growth as growth_mod
 from .. import life as life_mod
 from .. import mood as mood_mod
 from .. import web_tools
@@ -121,8 +122,9 @@ PROACTIVE_INTENTS = (
 )
 
 REFLECT_PROMPT = """下面是你和对方的最近对话。请总结并只输出 JSON（不要代码块、不要解释）：
-{"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"]}
-traits 取 0-1，表示你目前的性格倾向。important 只放真正重要的事（约定、家人、健康、重要日期、矛盾与和解），没有就给空数组。"""
+{"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"], "self": {"opinions": ["这几轮里你明确表达过的一个看法，第一人称、20字内"], "habits": ["你最近的状态或习惯，如「连着三晚两点睡」，20字内"], "voice": ["你嘴上常挂的一个词或语气，如「行吧」「烦死了」"], "self": ["你对自己的一句认知，如「我嘴硬心软」"]}}
+traits 取 0-1，表示你目前的性格倾向。important 只放真正重要的事（约定、家人、健康、重要日期、矛盾与和解），没有就给空数组。
+self 是你自己的变化，只写这次对话里**新出现**的，没有就给空数组，不要硬凑、不要重复以前的。"""
 
 
 def _merge(base: dict, override: dict) -> dict:
@@ -350,13 +352,14 @@ class Companion:
     )
 
     @staticmethod
-    def _reminder(persona: dict) -> str:
+    def _reminder(persona: dict, extra: str = "") -> str:
         name = persona.get("name") or "小柚"
         first = (persona.get("prompt") or "").strip().split("\n")[0][:40]
         return (
             f"[你就是{name}。{first} 回话极短，一句最多12字，口语；"
             "先说你的态度和看法，别只顺着问；不同意就直接说；"
-            "绝不当助手、不解释、不问要不要帮忙、不说自己是 AI]\n"
+            "绝不当助手、不解释、不问要不要帮忙、不说自己是 AI]"
+            + (extra or "") + "\n"
         )
 
     def _system_prompt(self, pid: str, persona: dict, mem) -> str:
@@ -381,10 +384,20 @@ class Companion:
         return "\n".join(p for p in parts if p)
 
 
+    def _growth_root(self) -> str:
+        return str((self.cfg.get("memory") or {}).get("root") or "data")
+
     def _system_prompt_for(self, chat_id: str) -> str:
         pid, persona, mem = self._ctx(chat_id)
         base = self._system_prompt(pid, persona, mem)
         extra = []
+        # 自己长出来的观点/习惯/口头禅（跟记忆分开，这是「她变了」那部分）
+        try:
+            gtxt = growth_mod.describe(growth_mod.load(self._growth_root(), pid, chat_id))
+            if gtxt:
+                extra.append(gtxt)
+        except Exception as exc:
+            log.debug("成长档案注入失败：%r", exc)
         if self.fe("memory"):
             summary = mem.get_summary(chat_id)
             facts = mem.facts(chat_id)
@@ -811,10 +824,13 @@ class Companion:
         if len(history) < 6:
             return
         convo = "\n".join(f"{'对方' if m['role'] == 'user' else '我'}：{m['content']}" for m in history)
+        # 这类型号忽略 system，复盘指令必须塞进 user 消息，否则它会当成聊天继续演
         raw = await self._chat(
             [
-                {"role": "system", "content": f"你是「{persona.get('name')}」。\n" + REFLECT_PROMPT},
-                {"role": "user", "content": convo[:3000]},
+                {"role": "system", "content": "你是一个只输出 JSON 的分析器。"},
+                {"role": "user", "content":
+                    "【分析任务，不是聊天，不要角色扮演，不要安慰我，只输出 JSON】\n"
+                    + REFLECT_PROMPT + "\n\n对话记录：\n" + convo[:3000]},
             ],
             temperature=0.3,
         )
@@ -840,12 +856,26 @@ class Companion:
             merged.update(traits)
             mem.set_state("__persona__", state.get("mood") or {}, merged)
         mem.reset_counter(chat_id)
+        # 人设成长：把这次复盘里「她自己的变化」并进成长档案
+        grew = {}
+        try:
+            selfdata = data.get("self") or {}
+            if isinstance(selfdata, dict):
+                grew = growth_mod.absorb(
+                    self._growth_root(), pid, chat_id,
+                    {k: [str(x) for x in (selfdata.get(k) or [])] for k in ("opinions", "habits", "voice", "self")},
+                )
+        except Exception as exc:
+            log.warning("成长档案更新失败：%r", exc)
         log.info(
-            "复盘完成[%s]：事实%d条 性格%d项 永久保留%d条对话",
+            "复盘完成[%s]：事实%d条 性格%d项 永久保留%d条对话 成长观点%d 习惯%d 口头禅%d",
             persona.get("name"),
             len(data.get("facts") or {}),
             len(traits),
             kept,
+            len(grew.get("opinions") or []),
+            len(grew.get("habits") or []),
+            len(grew.get("voice") or []),
         )
 
     # ------------------------------------------------------------ 白名单
@@ -1008,8 +1038,12 @@ class Companion:
         if (self.cfg.get("llm") or {}).get("prime", True):
             messages[1:1] = [dict(x) for x in self.FEW_SHOT]
             if messages and messages[-1].get("role") == "user":
+                try:
+                    grow_brief = growth_mod.brief(growth_mod.load(self._growth_root(), pid, chat_id))
+                except Exception:
+                    grow_brief = ""
                 messages[-1] = {"role": "user",
-                                "content": self._reminder(persona) + str(messages[-1].get("content") or "")}
+                                "content": self._reminder(persona, grow_brief) + str(messages[-1].get("content") or "")}
 
         # 「做个图」：现场拼一张给她
         if re.search(r"(做个?图|做张?图|发张?图|发个图|梗图|把.{0,14}做成图)", text):
