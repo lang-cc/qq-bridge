@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from html import unescape
 
 log = logging.getLogger("qqbot.web")
 
@@ -32,8 +33,11 @@ def _clean(html: str) -> str:
         .replace("&quot;", '"')
         .replace("&#39;", "'")
     )
+    # 剩下的数字/命名实体（&ensp; &#0183; 之类）统一解码，不然摘要有乱码
+    text = unescape(text)
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[\u2000-\u200f\u2028-\u202f\u2060\ufeff]", " ", text)
     return text.strip()
 
 
@@ -202,29 +206,122 @@ async def douyin_hot(limit: int = 10) -> list[dict]:
     return []
 
 
-async def web_search(query: str, limit: int = 5) -> list[dict]:
-    """DuckDuckGo HTML 版搜索，返回 [{title, url, snippet}]。"""
-    import aiohttp
-    from urllib.parse import quote, unquote
+def _abs(url: str, base: str = "") -> str:
+    """补全协议相对 / 站点相对的链接。"""
+    url = (url or "").strip()
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return base.rstrip("/") + url
+    return url
 
-    url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
-    headers = {"User-Agent": UA}
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=headers, timeout=25) as r:
-                html = await r.text(errors="ignore")
-        out = []
-        for m in re.finditer(r'(?is)<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html):
-            href, title = m.group(1), _clean(m.group(2))
-            if "uddg=" in href:
-                href = unquote(href.split("uddg=")[1].split("&")[0])
-            out.append({"title": title, "url": href})
-            if len(out) >= limit:
-                break
-        return out
-    except Exception as exc:
-        log.warning("网页搜索失败：%r", exc)
-        return []
+
+def _parse_bing(html: str, limit: int) -> list[dict]:
+    out: list[dict] = []
+    for m in re.finditer(r'(?is)<li class="b_algo".*?(?=<li class="b_algo"|</ol>)', html):
+        block = m.group(0)
+        a = re.search(r'(?is)<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block)
+        if not a:
+            continue
+        p = re.search(r'(?is)<p[^>]*>(.*?)</p>', block)
+        out.append({
+            "title": _clean(a.group(2)),
+            "url": _abs(a.group(1)),
+            "snippet": _clean(p.group(1)) if p else "",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _parse_so(html: str, limit: int) -> list[dict]:
+    """360 搜索：a 标签带 data-mdurl 时优先用它（真实目标页）。"""
+    out: list[dict] = []
+    for m in re.finditer(r'(?is)<h3[^>]*class="res-title[^"]*"[^>]*>\s*<a([^>]*)>(.*?)</a>', html):
+        attrs, inner = m.group(1), m.group(2)
+        href = re.search(r'href="([^"]+)"', attrs)
+        if not href:
+            continue
+        md = re.search(r'data-mdurl="([^"]+)"', attrs)
+        out.append({
+            "title": _clean(inner),
+            "url": _abs(md.group(1) if md else href.group(1)),
+            "snippet": "",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _parse_sogou(html: str, limit: int) -> list[dict]:
+    out: list[dict] = []
+    for m in re.finditer(r'(?is)<h3 class="vr-title".*?</h3>', html):
+        a = re.search(r'(?is)<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', m.group(0))
+        if not a:
+            continue
+        out.append({
+            "title": _clean(a.group(2)),
+            "url": _abs(a.group(1), "https://www.sogou.com"),
+            "snippet": "",
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _parse_ddg(html: str, limit: int) -> list[dict]:
+    from urllib.parse import unquote
+
+    out: list[dict] = []
+    for m in re.finditer(r'(?is)<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html):
+        href = m.group(1)
+        if "uddg=" in href:
+            href = unquote(href.split("uddg=")[1].split("&")[0])
+        out.append({"title": _clean(m.group(2)), "url": _abs(href), "snippet": ""})
+        if len(out) >= limit:
+            break
+    return out
+
+
+# 按顺序试，第一个出结果的就用。DuckDuckGo 在国内基本连不上，放最后兜底。
+SEARCH_ENGINES = (
+    ("bing", "https://cn.bing.com/search?q={q}&setlang=zh-CN", _parse_bing),
+    ("360", "https://www.so.com/s?q={q}", _parse_so),
+    ("sogou", "https://www.sogou.com/web?query={q}", _parse_sogou),
+    ("ddg", "https://html.duckduckgo.com/html/?q={q}", _parse_ddg),
+)
+
+
+async def web_search(query: str, limit: int = 5) -> list[dict]:
+    """多源网页搜索，返回 [{title, url, snippet}]。
+
+    以前只用 DuckDuckGo，国内连不上就静默返回空（等于「开了但空转」）。
+    现在按 Bing(国内版) → 360 → 搜狗 → DuckDuckGo 顺序兜底，谁先出结果用谁。
+    """
+    import aiohttp
+    from urllib.parse import quote
+
+    headers = {"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9"}
+    async with aiohttp.ClientSession() as session:
+        for name, tpl, parse in SEARCH_ENGINES:
+            url = tpl.format(q=quote(query))
+            try:
+                async with session.get(url, headers=headers, timeout=12) as resp:
+                    html = await resp.text(errors="ignore")
+            except Exception as exc:
+                log.warning("搜索源 %s 连不上：%r", name, exc)
+                continue
+            try:
+                out = parse(html, limit)
+            except Exception as exc:
+                log.warning("搜索源 %s 解析失败：%r", name, exc)
+                continue
+            if out:
+                log.info("网页搜索：%s 命中 %d 条（%s）", name, len(out), query[:20])
+                return out
+            log.warning("搜索源 %s 没解析出结果", name)
+    log.warning("网页搜索：所有源都没结果（%s）", query[:30])
+    return []
 
 
 def context_block(pages: list[dict], bili: list[dict] | None = None, search: list[dict] | None = None) -> str:
@@ -242,5 +339,6 @@ def context_block(pages: list[dict], bili: list[dict] | None = None, search: lis
     if search:
         lines.append("【搜索结果】")
         for s in search:
-            lines.append(f"- {s['title']} | {s['url']}")
+            snip = (s.get("snippet") or "").strip()
+            lines.append(f"- {s['title']} | {s['url']}" + (f"\n  {snip[:160]}" if snip else ""))
     return "\n".join(lines)[:4000]
