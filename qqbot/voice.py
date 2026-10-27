@@ -12,6 +12,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -77,9 +78,37 @@ def silk_encoder(cfg: dict | None = None) -> str | None:
     )
 
 
+def _measure_levels(ffmpeg: str, src: str) -> tuple[float | None, float | None]:
+    """量峰值与平均电平（dB），决定提多少响度。"""
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", src, "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return None, None
+    err = r.stderr or ""
+    peak = re.search(r"max_volume:\s*(-?\d+(?:\.\d+)?) dB", err)
+    mean = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?) dB", err)
+    return (float(peak.group(1)) if peak else None,
+            float(mean.group(1)) if mean else None)
+
+
 def _ffmpeg_to_pcm(ffmpeg: str, src: str, pcm: str) -> None:
+    """转 24k 单声道 PCM，顺便把「听着偏小」的语音顶响一些。
+
+    做法：先压峰值留出余量，再整体提电平，把平均响度拉到 -4dB 左右
+    （QQ 语音条在手机上大多是外放/小音量，平均电平比峰值更重要）。
+    """
+    peak, mean = _measure_levels(ffmpeg, src)
+    filters = ["highpass=f=60"]
+    if mean is not None and mean < -6.0:
+        gain = min(-4.0 - mean, 9.0)
+        filters += ["alimiter=limit=0.45", f"volume={gain:.1f}dB"]
+        log.info("语音响度：平均 %.1fdB（峰值 %.1fdB），提升 %.1fdB", mean, peak if peak is not None else 0, gain)
     subprocess.run(
-        [ffmpeg, "-y", "-i", src, "-ar", "24000", "-ac", "1", "-f", "s16le", pcm],
+        [ffmpeg, "-y", "-i", src, "-af", ",".join(filters),
+         "-ar", "24000", "-ac", "1", "-f", "s16le", pcm],
         check=True,
         capture_output=True,
     )

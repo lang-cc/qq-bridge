@@ -91,7 +91,13 @@ async def synth(text: str, voice: str = "zh-CN-XiaoyiNeural", rate: str = "+0%",
 
 
 async def aliyun_synth(text: str, api_key: str, voice: str = "Cherry", model: str = "qwen3-tts-flash") -> str | None:
-    """阿里云百炼语音合成（Qwen-TTS / CosyVoice），国内直连、音质接近真人。"""
+    """阿里云百炼语音合成，国内直连、音质接近真人。
+
+    两套接口按模型分流：
+      - qwen3-tts-*                → aigc/multimodal-generation（{model, input{text,voice}}）
+      - cosyvoice-* / qwen-audio-* → audio/tts/SpeechSynthesizer（含 format/sample_rate）
+    复刻出来的音色（cosyvoice-v3.5-plus-xxx）走后者。
+    """
     import aiohttp
 
     text = (text or "").strip()
@@ -100,11 +106,15 @@ async def aliyun_synth(text: str, api_key: str, voice: str = "Cherry", model: st
     text = text[:600]  # 接口上限 600 字
     out_dir = Path("tmp")
     out_dir.mkdir(exist_ok=True)
-    url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
-    payload = {
-        "model": model,
-        "input": {"text": text, "voice": voice, "language_type": "Chinese"},
-    }
+    legacy = model.startswith(("cosyvoice", "qwen-audio"))
+    if legacy:
+        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer"
+        payload = {"model": model,
+                   "input": {"text": text, "voice": voice, "format": "wav", "sample_rate": 24000}}
+    else:
+        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        payload = {"model": model,
+                   "input": {"text": text, "voice": voice, "language_type": "Chinese"}}
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
