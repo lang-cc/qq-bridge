@@ -34,16 +34,23 @@ autoreply:
     jitter_ms: 700
   split:
     enabled: true
-    max_segments: 3
+    max_segments: 2
     gap_ms:
-    - 500
-    - 1500
+    - 700
+    - 1800
+  human:
+    # 把模型的「作文」压成人话：去客服腔、去旁白、砍长句、限段数
+    enabled: true
+    max_chars: 26
+    max_segments: 2
   llm:
     enabled: true
     base_url: https://api.deepseek.com/v1
     api_key: ''
     model: deepseek-chat
-    temperature: 0.95
+    temperature: 1
+    presence_penalty: 0.35
+    frequency_penalty: 0.2
     history: 12
     persona: |-
       你在 QQ 上跟人聊天，是个普通年轻人（男生），不是助手也不是 AI。

@@ -45,6 +45,7 @@ DEFAULTS = {
     "fallback": "",
     "typing": {"enabled": True, "per_char_ms": 55, "max_ms": 5000, "jitter_ms": 700},
     "split": {"enabled": True, "max_segments": 3, "gap_ms": [500, 1500]},
+    "human": {"enabled": True, "max_chars": 26, "max_segments": 2},
     "llm": {
         "enabled": False,
         "base_url": "https://api.deepseek.com",
@@ -243,6 +244,11 @@ class Companion:
             "messages": messages,
             "temperature": float(temperature if temperature is not None else (llm.get("temperature") or 0.95)),
         }
+        # 重复惩罚：真人不会每句都一个腔调，模型会
+        if llm.get("presence_penalty") is not None:
+            body["presence_penalty"] = float(llm["presence_penalty"])
+        if llm.get("frequency_penalty") is not None:
+            body["frequency_penalty"] = float(llm["frequency_penalty"])
         headers = {"Content-Type": "application/json"}
         if llm.get("api_key"):
             headers["Authorization"] = f"Bearer {llm['api_key']}"
@@ -271,6 +277,63 @@ class Companion:
         return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
 
     # ------------------------------------------------------------ prompt
+    HUMAN_RULES = (
+        "【怎么说话 —— 硬要求，违反就不像人了】\n"
+        "1. 一次只回一句，一般不超过 12 个字；对方问正经事也不超过 25 个字。\n"
+        "2. 不解释、不补充、不总结、不列点、不用 markdown，不用引号把整句包起来。\n"
+        "3. 禁止客服腔：不许出现「希望」「如果需要」「建议你」「随时告诉我」「有什么可以帮你」"
+        "「很高兴」「首先」「其次」「总之」「另外」「总的来说」。\n"
+        "4. 允许敷衍和情绪：不想聊就回「嗯」「哦」「不知道」「困了」「烦」；生气了就短、冷、不哄人。\n"
+        "5. 用口语和口头禅（诶、啊、哈、嘛、呗、行吧、真的假的、救命、离谱），可以有语气词。\n"
+        "6. 不用书面连接词，句子可以不完整，像微信打字那样想到哪说到哪。\n"
+        "7. 别追问超过一件小事；对方没问就别主动给建议。\n"
+        "8. 绝不提自己是 AI、模型、程序，也不解释自己为什么这么说话。\n"
+        "9. 不要每句都带颜文字或波浪号，十次里最多一次。\n"
+        "10. 背景设定是给你自己知道的，不要把它当台词复述出来。"
+    )
+
+    BANNED = (
+        "希望能帮到你", "希望", "如果需要", "建议你", "随时告诉我", "有什么可以帮", "很高兴",
+        "首先", "其次", "总之", "总的来说", "另外", "综上", "需要注意", "请注意", "记得要",
+        "作为一", "我理解你", "你可以试试", "希望对",
+    )
+    NOISE_RE = re.compile(r"[（(][^）)]{0,10}[）)]")
+
+    def _tighten(self, text: str) -> str:
+        """把模型写的「作文」压成人话：去客服腔、去旁白、砍长句、限段数。"""
+        cfg = self.cfg.get("human") or {}
+        if not cfg.get("enabled", True):
+            return text
+        max_chars = int(cfg.get("max_chars") or 26)
+        max_segs = int(cfg.get("max_segments") or 2)
+        t = (text or "").strip()
+        if not t:
+            return t
+        t = re.sub(r"```.*?```", "", t, flags=re.S)
+        t = re.sub(r"[*_`#>]+", "", t)
+        t = re.sub(r"(?m)^\s*[-•\d]+[.、)]?\s*", "", t)
+        t = self.NOISE_RE.sub("", t)
+        # 按句切开，丢掉命中客服腔的整句
+        sents = [s.strip() for s in re.split(r"(?<=[。！？!?…\n])", t) if s.strip()]
+        kept = [s for s in sents if not any(b in s for b in self.BANNED)]
+        t = "".join(kept).strip() or t
+        # 拆段：优先按换行/句末标点，最多 max_segs 段
+        parts = [p.strip() for p in re.split(r"(?<=[。！？!?…\n])", t) if p.strip()]
+        parts = parts[:max_segs] or [t]
+        # 每段太长就在标点处砍断，剩下的不要（真人不会一口气说一大段）
+        out = []
+        for p in parts:
+            p = p.strip()
+            if len(p) > max_chars:
+                cut = -1
+                for m in re.finditer(r"[，,。！？!?…、\s]", p[:max_chars]):
+                    cut = m.start()
+                p = p[:cut] if cut > 4 else p[:max_chars]
+            p = p.rstrip("，,、")
+            if p:
+                out.append(p)
+        return "\n".join(out).strip() or t
+
     def _system_prompt(self, pid: str, persona: dict, mem) -> str:
         llm = self.cfg.get("llm") or {}
         parts = [
@@ -285,20 +348,13 @@ class Companion:
         if traits:
             shown = "，".join(f"{k} {v}" for k, v in list(traits.items())[:6])
             parts.append(f"你的性格倾向（0-1，越高越明显）：{shown}。")
-        if llm.get("multi_line"):
-            parts.append(
-                "输出要求：回 1-3 条短消息，每条 ≤25 字，条与条之间用换行分隔；"
-                "口语、活泼，不用 markdown/列表/总结，不说自己是 AI。"
-                "大多数时候只说话、不要配图；十次里顶多一两次才在末尾加 [表情]。"
-                "需要分享链接时把 URL 直接写进回复。"
-            )
-        else:
-            parts.append(
-                "输出要求：只回一两句话（≤25字），口语，不用 markdown/列表/总结，不说自己是 AI。"
-                "大多数时候只说话、不要配图；十次里顶多一两次才在末尾加 [表情]。"
-                "需要分享链接时把 URL 直接写进回复。"
-            )
+        parts.append(self.HUMAN_RULES)
+        parts.append(
+            "需要分享链接时把 URL 直接写进回复。"
+            "大多数时候只说话、不要配图；十次里顶多一两次才在末尾加 [表情]。"
+        )
         return "\n".join(p for p in parts if p)
+
 
     def _system_prompt_for(self, chat_id: str) -> str:
         pid, persona, mem = self._ctx(chat_id)
@@ -936,6 +992,7 @@ class Companion:
 
         want_sticker = bool(re.search(r"[\[【](表情|表情包|sticker)[\]】]", answer))
         answer = re.sub(r"[\[【](表情|表情包|sticker)[\]】]", "", answer).strip()
+        answer = self._tighten(answer)   # 压成人话：短句、去客服腔、去旁白
 
         tcfg = self.cfg.get("tts") or {}
         force_voice = bool(re.search(r"(发个?语音|说句话|语音回|用语音)", text))
