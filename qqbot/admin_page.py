@@ -250,11 +250,17 @@ PAGE = r"""<!doctype html>
   <!-- ============ 概览 ============ -->
   <section class="tab active" id="tab-ov">
     <div class="card" id="needlogin" style="display:none;border-color:rgba(255,107,107,.42);background:rgba(255,107,107,.06)">
-      <div class="card-h" style="margin-bottom:0">
+      <div class="card-h">
         <div>
-          <h2 style="color:#ff9b9b">现在不在线：QQ 号掉登录了</h2>
-          <p>点右上角「扫码登录」，或者打开 NapCat 面板（桌面「NapCat 面板」图标 / 127.0.0.1:6099）用手机 QQ 扫一下。
-             扫完这里会自己变成绿色，不用重启。</p>
+          <h2 style="color:#ff9b9b">还没登录 QQ</h2>
+          <p>用手机 QQ 扫下面这张码；扫完这一页自己会变绿，不用刷新。</p>
+        </div>
+      </div>
+      <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+        <img id="loginqr" alt="登录二维码" style="width:186px;height:186px;object-fit:contain;background:#fff;border-radius:12px;padding:8px">
+        <div style="display:flex;flex-direction:column;gap:10px;min-width:180px">
+          <button class="btn ghost" onclick="refreshQR(this)">换一张二维码</button>
+          <span id="loginstat" style="font-size:13px;color:#9aa4b2">等待扫码…</span>
         </div>
       </div>
     </div>
@@ -509,7 +515,27 @@ async function loadStatus() {
     $('st-acct').textContent = st.self_id || '—';
     $('st-plug').textContent = st.plugins ?? '—';
     $('needlogin').style.display = st.connected ? 'none' : 'block';
+    // 没登录就在这一页直接显示二维码，省得再开一个页面
+    if (!st.connected) {
+      const q = $('loginqr');
+      if (q && Date.now() - (window.__qrAt || 0) > 4000) {
+        q.src = A('/admin/qr.png') + '&t=' + Date.now();
+        window.__qrAt = Date.now();
+      }
+      if ($('loginstat')) $('loginstat').textContent = '等待扫码…';
+    } else if ($('loginstat')) {
+      $('loginstat').textContent = '已登录 QQ ' + (st.self_id || '');
+    }
   } catch (e) { /* 服务正在重启 */ }
+}
+
+async function refreshQR(btn) {
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '刷新中…';
+  if ($('loginstat')) $('loginstat').textContent = '正在重开协议端，约 20 秒出新码…';
+  try { await fetch(A('/admin/qr/refresh'), {method: 'POST'}); } catch (e) {}
+  window.__qrAt = 0;
+  setTimeout(() => { btn.disabled = false; btn.textContent = old; }, 18000);
 }
 
 /* ---------- 保存 ---------- */
@@ -563,6 +589,7 @@ async function act(path, label) {
     if (d.error) t += '\n' + d.error;
     $('actout').textContent = t;
     toast(label + (d.ok ? ' ✓' : ' ✗'), !d.ok);
+    if (d.url) window.open(A(d.url), '_blank');   // 扫码登录这类动作要开新页面
   } catch (e) {
     $('actout').textContent = label + '：服务在重启，等 10 秒刷新本页';
     toast(label + ' 已发出');

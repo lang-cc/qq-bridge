@@ -88,6 +88,9 @@ class HttpApi:
                 web.get("/admin/memory", self.h_admin_memory),
                 web.post("/admin/memory/clear", self.h_admin_memory_clear),
                 web.post("/admin/login", self.h_admin_login),
+                web.get("/admin/qr", self.h_admin_qr),
+                web.get("/admin/qr.png", self.h_admin_qr_png),
+                web.post("/admin/qr/refresh", self.h_admin_qr_refresh),
                 web.post("/admin/watchdog", self.h_admin_watchdog),
                 web.post("/admin/restart", self.h_admin_restart),
                 web.post("/admin/backup", self.h_admin_backup),
@@ -650,11 +653,83 @@ class HttpApi:
                          close_fds=True, creationflags=flags)
         return True
 
+    # 扫码登录页：Linux 下没有桌面窗口，改成一个手机能直接看的网页，
+    # 二维码从 NapCat 容器里取，自动刷新 + 显示登录状态。
+    LOGIN_HTML = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>扫码登录</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f1115;color:#e8eaf0;
+display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;gap:16px;padding:20px;box-sizing:border-box}
+h3{margin:0;font-weight:600;font-size:17px}
+img{width:min(76vw,300px);height:auto;background:#fff;border-radius:16px;padding:10px;display:block}
+button{background:#2b6cff;border:0;color:#fff;padding:12px 22px;border-radius:11px;font-size:15px}
+button[disabled]{opacity:.6}
+#s{font-size:14px;color:#9aa4b2;min-height:20px}
+#s.ok{color:#3ddc84}
+</style></head><body>
+<h3>用手机 QQ 扫码登录</h3>
+<img id="q" src="/admin/qr.png?token=__TOKEN__&t=0" alt="二维码">
+<button id="b" onclick="refresh()">换一张</button>
+<div id="s">等待扫码…</div>
+<script>
+const T='__TOKEN__';
+function tick(){document.getElementById('q').src='/admin/qr.png?token='+T+'&t='+Date.now();}
+async function refresh(){const b=document.getElementById('b');b.disabled=true;b.textContent='刷新中…';
+  try{await fetch('/admin/qr/refresh?token='+T,{method:'POST'});}catch(e){}
+  setTimeout(()=>{tick();b.disabled=false;b.textContent='换一张';},16000);}
+setInterval(async()=>{
+  if(document.getElementById('s').classList.contains('ok'))return;
+  tick();
+  try{const d=await(await fetch('/status')).json();const s=document.getElementById('s');
+    if(d.connected){s.textContent='已登录 ✅ QQ '+d.self_id;s.className='ok';}
+  }catch(e){}
+},5000);
+</script></body></html>"""
+
     async def h_admin_login(self, request: web.Request) -> web.Response:
-        """拉起扫码登录窗口（QQ 协议端登录）。"""
+        """扫码登录：Windows 拉起桌面窗口；Linux 交给网页二维码。"""
         self._auth(request)
+        if os.name != "nt":
+            return _j({"ok": True, "url": f"/admin/qr?token={self.token}",
+                       "hint": "已打开二维码页面，用手机 QQ 扫一下"})
         ok = self._spawn("login_qr.py")
         return _j({"ok": ok, "hint": "扫码窗口已弹出，用手机 QQ 扫一下" if ok else "没找到 login_qr.py"})
+
+    async def h_admin_qr(self, request: web.Request) -> web.Response:
+        """手机可直接打开的扫码登录页。"""
+        self._auth(request)
+        return web.Response(text=self.LOGIN_HTML.replace("__TOKEN__", self.token),
+                            content_type="text/html")
+
+    async def h_admin_qr_png(self, request: web.Request) -> web.Response:
+        """把 NapCat 容器里的二维码取出来给页面用。"""
+        self._auth(request)
+        import subprocess
+        from pathlib import Path
+
+        out = Path("/tmp/qqbot-qrcode.png")
+        try:
+            subprocess.run(["docker", "cp", "napcat:/app/napcat/cache/qrcode.png", str(out)],
+                           capture_output=True, timeout=20)
+            raw = out.read_bytes()
+        except Exception as exc:
+            log.debug("取二维码失败：%r", exc)
+            raw = b""
+        if not raw:
+            return web.Response(status=404, text="no qr")
+        return web.Response(body=raw, content_type="image/jpeg",
+                            headers={"Cache-Control": "no-store"})
+
+    async def h_admin_qr_refresh(self, request: web.Request) -> web.Response:
+        """重开协议端，换一张新二维码（旧的大约两分钟就过期）。"""
+        self._auth(request)
+        import subprocess
+
+        try:
+            subprocess.run(["docker", "restart", "napcat"], capture_output=True, timeout=120)
+        except Exception as exc:
+            return _j({"ok": False, "error": f"重启协议端失败：{exc}"[:160]})
+        return _j({"ok": True, "hint": "新二维码约 20 秒后生成，页面会自动刷新"})
 
     async def h_admin_watchdog(self, request: web.Request) -> web.Response:
         """开掉线自愈（watchdog.py，锁端口 9335）。"""
