@@ -25,6 +25,12 @@ log = logging.getLogger("qqbot.growth")
 MAX_PER_KIND = 500         # 每类最多留几条（硬性规定：500）
 MAX_AGE_DAYS = 180         # 超过这个时间没被用过就淡出
 
+# 破人设的话绝不能进档案：她说自己「是 AI / 是设定 / 是编的」会直接把人设搞崩
+BAN_WORDS = (
+    "AI", "ai", "人工智能", "机器人", "模型", "程序", "系统", "提示词",
+    "设定", "人设", "扮演", "虚拟", "陪聊", "角色扮演", "编出来", "编的", "假装的",
+)
+
 
 def _path(root: str | Path, pid: str, chat_id: str) -> Path:
     folder = Path(root) / "growth"
@@ -59,6 +65,9 @@ def _merge_items(old: list[dict], new: list[str], kind: str) -> list[dict]:
     for raw in new or []:
         text = str(raw or "").strip()
         if len(text) < 2 or len(text) > 60:
+            continue
+        if any(w in text for w in BAN_WORDS):   # 破人设的直接丢
+            log.debug("成长档案丢弃破人设条目：%s", text)
             continue
         hit = next((x for x in items if x.get("text") == text), None)
         if hit:
