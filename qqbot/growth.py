@@ -83,12 +83,56 @@ def _merge_items(old: list[dict], new: list[str], kind: str) -> list[dict]:
     return items[:MAX_PER_KIND]
 
 
+def _similar(a: str, b: str) -> float:
+    from difflib import SequenceMatcher
+
+    return SequenceMatcher(None, str(a or ""), str(b or "")).ratio()
+
+
+def revise_items(data: dict, revise: list) -> list[str]:
+    """改主意：把旧观点改写成新说法（真人被磨久了会松口）。
+
+    revise 里每条是 {"from": 旧原文, "to": 新说法}；找不到旧的就当年新观点加进去。
+    返回真正被改写的条目，方便记日志。
+    """
+    changed: list[str] = []
+    now = time.time()
+    for it in revise or []:
+        if not isinstance(it, dict):
+            continue
+        frm = str(it.get("from") or "").strip()
+        to = str(it.get("to") or "").strip()
+        if not to or len(to) > 60 or any(w in to for w in BAN_WORDS):
+            continue
+        best, best_score = None, 0.0
+        for kind in ("opinions", "habits", "voice", "self"):
+            for x in data.get(kind) or []:
+                score = _similar(x.get("text"), frm) if frm else 0.0
+                if score > best_score:
+                    best, best_score = (kind, x), score
+        if best and best_score >= 0.45:
+            kind, item = best
+            changed.append(f"{item.get('text')} → {to}")
+            item["text"] = to
+            item["ts"] = now
+            item["hits"] = max(2, int(item.get("hits") or 1))
+            item["revised"] = int(item.get("revised") or 0) + 1
+        else:
+            data.setdefault("opinions", []).append({"text": to, "hits": 1, "ts": now, "kind": "opinions"})
+            changed.append(f"新增(改主意见)：{to}")
+    return changed
+
+
 def absorb(root: str | Path, pid: str, chat_id: str, fresh: dict) -> dict:
     """把复盘得到的 self 数据并进档案，返回合并后的档案。"""
     data = load(root, pid, chat_id)
     for kind in ("opinions", "habits", "voice", "self"):
         if kind in fresh:
             data[kind] = _merge_items(data.get(kind) or [], fresh.get(kind) or [], kind)
+    changed = revise_items(data, fresh.get("revise") or [])
+    if changed:
+        data["last_revise"] = changed[:5]
+        log.info("观点被改写 %d 条：%s", len(changed), "；".join(changed[:3]))
     data["updated"] = time.time()
     save(root, pid, chat_id, data)
     return data

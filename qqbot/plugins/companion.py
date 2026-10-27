@@ -122,9 +122,11 @@ PROACTIVE_INTENTS = (
 )
 
 REFLECT_PROMPT = """下面是你和对方的最近对话。请总结并只输出 JSON（不要代码块、不要解释）：
-{"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"], "self": {"opinions": ["这几轮里你明确表达过的一个看法，第一人称、20字内"], "habits": ["你最近的状态或习惯，如「连着三晚两点睡」，20字内"], "voice": ["你嘴上常挂的一个词或语气，如「行吧」「烦死了」"], "self": ["你对自己的一句认知，如「我嘴硬心软」"]}}
+{"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"], "self": {"opinions": ["这几轮里你明确表达过的一个看法，第一人称、20字内"], "habits": ["你最近的状态或习惯，如「连着三晚两点睡」，20字内"], "voice": ["你嘴上常挂的一个词或语气，如「行吧」「烦死了」"], "self": ["你对自己的一句认知，如「我嘴硬心软」"]}, "revise": [{"from": "你以前坚持过的一条看法原文", "to": "这轮你被说服后改成的新说法"}]}
 traits 取 0-1，表示你目前的性格倾向。important 只放真正重要的事（约定、家人、健康、重要日期、矛盾与和解），没有就给空数组。
-self 是你自己的变化，只写这次对话里**新出现**的，没有就给空数组，不要硬凑、不要重复以前的。"""
+self 是你自己的变化，只写这次对话里**新出现**的，没有就给空数组，不要硬凑、不要重复以前的。
+revise 只在**你确实松口、让步、被说服或改主意**时才写（比如本来死活不肯的，这轮愿意了）；没改变就给空数组。
+特别注意：相处久了人会有变化，别把立场写死。"""
 
 
 def _merge(base: dict, override: dict) -> dict:
@@ -297,7 +299,8 @@ class Companion:
         "12. 不同意就直接说「我不这么觉得」，不需要附和，也不许为了让他高兴改口。\n"
         "13. 你有自己的事和想要的东西（想吃什么、想买什么、今天打算干嘛），会自然地说起，不等他问。\n"
         "14. 不懂的事按你的性子和经验瞎猜、吐槽，别给标准答案，别列要点。\n"
-        "15. 偶尔主动挑起一件你关心的小事（猫、吃的、店里的事），一句话就行。"
+        "15. 偶尔主动挑起一件你关心的小事（猫、吃的、店里的事），一句话就行。\n"
+        "16. 你不倔到底：被说服、被磨久了可以松口改主意，改了就当场改口，别再死守旧的。"
     )
 
     BANNED = (
@@ -849,7 +852,7 @@ class Companion:
         # 太长就分块复盘（每块 8000 字，最多 4 块），结果合并，别漏掉前面聊的
         step = 8000
         chunks = [convo[i:i + step] for i in range(0, len(convo), step)][:4] or [convo]
-        merged: dict = {"facts": {}, "important": [], "traits": {}, "self": {}}
+        merged: dict = {"facts": {}, "important": [], "traits": {}, "self": {}, "revise": []}
         for c in chunks:
             d = await self._reflect_chunk(c)
             if not d:
@@ -866,6 +869,7 @@ class Companion:
                 for kind in ("opinions", "habits", "voice", "self"):
                     merged["self"].setdefault(kind, [])
                     merged["self"][kind] += [str(x) for x in (s.get(kind) or [])]
+            merged["revise"] += [x for x in (d.get("revise") or []) if isinstance(x, dict)]
         data = merged
         if not data.get("summary") and not data.get("facts") and not data.get("self"):
             return
@@ -889,7 +893,8 @@ class Companion:
             if isinstance(selfdata, dict):
                 grew = growth_mod.absorb(
                     self._growth_root(), pid, chat_id,
-                    {k: [str(x) for x in (selfdata.get(k) or [])] for k in ("opinions", "habits", "voice", "self")},
+                    {k: [str(x) for x in (selfdata.get(k) or [])] for k in ("opinions", "habits", "voice", "self")}
+                    | {"revise": data.get("revise") or []},
                 )
         except Exception as exc:
             log.warning("成长档案更新失败：%r", exc)
