@@ -179,62 +179,61 @@ ok "NapCat 已启动（面板 http://<公网IP>:6099）"
 
 # ---------- 6. 配置 ----------
 step "6/7 生成机器人配置"
-if [ -n "${QQ:-}" ]; then
-  users_yaml=""
-  if [ -n "${USERS:-}" ]; then
-    IFS=',' read -ra uarr <<< "$USERS"
-    for u in "${uarr[@]}"; do users_yaml="${users_yaml}    - \"$(echo "$u" | tr -d ' ')\"
-"; done
-  fi
-  groups_yaml=""
-  if [ -n "${GROUP:-}" ]; then
-    IFS=',' read -ra garr <<< "$GROUP"
-    for g in "${garr[@]}"; do groups_yaml="${groups_yaml}    - \"$(echo "$g" | tr -d ' ')\"
-"; done
-  fi
-  [ -z "$users_yaml" ] && users_yaml="    []"
-  [ -z "$groups_yaml" ] && groups_yaml="    []"
-  cat > "$ROOT/ticket.yaml" <<YAML
-robot:
-  qq: "${QQ}"
+# 两种输入都支持：
+#   A. 只有 4 项：BASE_URL / API_KEY / MODEL / PERSONA（人格整段文字，可多行）
+#   B. 再加 QQ / USERS / GROUP / CITY（知道就填，不知道留空，装完能自动认领）
+if [ -n "${TICKET_FILE:-}" ] && [ -f "$TICKET_FILE" ]; then
+  cp "$TICKET_FILE" "$ROOT/ticket.yaml"
+  ok "使用已有工单：$TICKET_FILE"
+elif [ -n "${BASE_URL:-}${API_KEY:-}${MODEL:-}${PERSONA:-}${PERSONA_FILE:-}" ]; then
+  ROOT="$ROOT" "$ROOT/.venv/bin/python" - <<'PY'
+import os, pathlib, yaml
 
-allow:
-  users:
-${users_yaml}
-  groups:
-${groups_yaml}
+def split(v):
+    return [x.strip() for x in (v or "").replace("，", ",").split(",") if x.strip()]
 
-city: "${CITY:-}"
+root = pathlib.Path(os.environ["ROOT"])
+persona_text = os.environ.get("PERSONA", "")
+pf = os.environ.get("PERSONA_FILE", "")
+if not persona_text and pf and pathlib.Path(pf).exists():
+    persona_text = pathlib.Path(pf).read_text(encoding="utf-8")
 
-api:
-  base_url: "${BASE_URL:-}"
-  api_key: "${API_KEY:-}"
-  model: "${MODEL:-}"
-
-persona:
-  name: "${PNAME:-小柚}"
-  age: ${AGE:-22}
-  who: "${WHO:-普通上班族}"
-  style: "${STYLE:-短句、口语，不说书面语}"
-  relation: "${RELATION:-}"
-
-group:
-  at_only: ${AT_ONLY:-true}
-  probability: 1.0
-
-tuning:
-  history: ${HISTORY:-100}
-YAML
-  ok "已生成 ticket.yaml"
+ticket = {
+    "api": {
+        "base_url": os.environ.get("BASE_URL", "").strip(),
+        "api_key": os.environ.get("API_KEY", "").strip(),
+        "model": os.environ.get("MODEL", "").strip(),
+    },
+    "persona": {
+        "name": os.environ.get("PNAME", "") or "小柚",
+        "age": int(os.environ.get("AGE") or 20),
+    },
+}
+if os.environ.get("QQ"):
+    ticket["robot"] = {"qq": os.environ["QQ"].strip()}
+users, groups = split(os.environ.get("USERS")), split(os.environ.get("GROUP"))
+if users or groups:
+    ticket["allow"] = {"users": users, "groups": groups}
+if os.environ.get("CITY"):
+    ticket["city"] = os.environ["CITY"].strip()
+if persona_text.strip():
+    ticket["persona"]["prompt"] = persona_text.strip()
+root.mkdir(parents=True, exist_ok=True)
+(root / "ticket.yaml").write_text(
+    yaml.safe_dump(ticket, allow_unicode=True, sort_keys=False), encoding="utf-8")
+print("已生成 ticket.yaml")
+PY
+  ok "已生成 ticket.yaml（含人格 ${PERSONA:+文本}${PERSONA_FILE:+文件}）"
 elif [ -f "$ROOT/ticket.yaml" ]; then
   ok "使用已有 ticket.yaml"
 else
   warn "没有配置，跳过（环境与 NapCat 已装好）"
-  echo "  下一步：放好 ticket.yaml 后重跑本脚本"
+  echo "  下一步：填好 ticket.yaml 或带 BASE_URL/API_KEY/MODEL/PERSONA 重跑本脚本"
   exit 0
 fi
 
 "$ROOT/.venv/bin/python" autoconfig.py --ticket ticket.yaml || die "配置生成失败"
+
 
 # ---------- 7. 启动（systemd 托管，避免多实例抢端口） ----------
 step "7/7 用 systemd 启动机器人服务"
@@ -297,12 +296,21 @@ echo ""
 echo -e "${c_cyan}==============================================${c_off}"
 echo -e "${c_green}部署完成${c_off}"
 echo ""
-echo "只剩一步（必须人工）："
-echo "  1) 防火墙放行 6099（来源先填 0.0.0.0/0，扫完码改回来）"
-echo "  2) 浏览器打开  http://<公网IP>:6099  用手机 QQ 扫码登录机器人号"
-echo "  3) 等 10 秒后验证："
-echo "       curl -s http://127.0.0.1:8088/status"
-echo "     OneBot 连接已预置，扫码后会自动连上，不用手动配"
+echo "剩下两步都要人工（顺序别换）："
+echo "  1) 安全组放行 6099（来源先填 0.0.0.0/0，扫完码改回自己的 IP）"
+echo "  2) 浏览器打开 http://<公网IP>:6099 ，用手机 QQ 扫码登录机器人号"
+echo ""
+if [ -n "${QQ:-}" ]; then
+  echo "  OneBot 连接已按 QQ=$QQ 预置，扫码后会自动连上："
+  echo "     curl -s http://127.0.0.1:8088/status   →   \"connected\": true"
+else
+  echo "  扫完码再跑这一条，把 NapCat 接到机器人服务上（自动配 WS + 等连接 + 记机器人号）："
+  echo "     bash $ROOT/scripts/link-onebot.sh"
+fi
+echo ""
+echo "最后认领白名单：让客户用自己要聊天的 QQ 给机器人发一句「在吗」（这时还不回），然后执行："
+echo "     cd $ROOT && .venv/bin/python tools/claim.py --auto"
+echo "  它会把发消息的号加进白名单并热重载，客户再发一句就能聊。"
 echo ""
 echo "日志：tail -f $ROOT/logs/qq-bridge.log"
 echo -e "${c_cyan}==============================================${c_off}"

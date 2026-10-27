@@ -775,7 +775,17 @@ class Companion:
 
     async def handle(self, event) -> bool:
         self.refresh()
-        if not self.cfg.get("enabled") or not self._allowed(event):
+        if not self.cfg.get("enabled"):
+            return False
+        if not self._allowed(event):
+            # 留痕：刚装好时白名单是空的，靠这条日志自动认出「第一个来聊天的人」
+            # （tools/claim.py 会扫它，把对方加进白名单，不用提前问客户 QQ 号）
+            log.info(
+                "白名单外消息：user=%s group=%s text=%r",
+                event.user_id,
+                event.group_id if event.group_id is not None else "-",
+                (event.message or "")[:40],
+            )
             return False
 
         # 关键词查询：不受「@ 才回」和概率限制，说了就答

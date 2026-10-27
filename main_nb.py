@@ -128,6 +128,22 @@ def main() -> None:
         api_cfg["port"] = int(os.environ["XN_HTTP_PORT"])
     holder: dict[str, Any] = {}
 
+    @driver.on_bot_connect
+    async def _on_bot_connect(bot) -> None:
+        """NapCat 连上来后把真实 QQ 号写进 config.yaml。
+
+        装机时不用提前问机器人号：扫码登录 → 这里记下来 → 以后静默登录同一个号。
+        """
+        from qqbot.account import bot_account, remember_account
+
+        self_id = str(getattr(bot, "self_id", "") or "")
+        if not self_id.isdigit():
+            return
+        if bot_account(ROOT) == self_id:
+            return
+        if remember_account(ROOT, self_id):
+            log.info("已把登录的机器人号写入 config.yaml：bot_qq=%s", self_id)
+
     @driver.on_startup
     async def _startup() -> None:
         # 老引擎的主动搭话 / 日记 / 备份循环要 create_task，必须活在事件循环里

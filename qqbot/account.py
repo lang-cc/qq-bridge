@@ -73,3 +73,37 @@ def napcat_launch_args(account: str, *, quiet: bool = True) -> list[str]:
     elif quiet:
         args = []  # 没有号就别硬传 -q（那会当成登录空号）
     return args
+
+
+def remember_account(root: str | Path, qq: str) -> bool:
+    """扫码登录后把真实 QQ 号写回 config.yaml（纯文本替换，不动注释和其他内容）。
+
+    这样装机时不用提前问客户机器人号：扫完码自动记下来，
+    下次 boot / watchdog / login_qr 就能静默登录同一个号。
+    """
+    qq = str(qq or "").strip()
+    if not qq.isdigit():
+        return False
+    path = Path(root) / "config.yaml"
+    if not path.exists():
+        return False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return False
+
+    hit = False
+    out: list[str] = []
+    for line in lines:
+        if line.startswith("bot_qq:"):
+            out.append(f'bot_qq: "{qq}"')
+            hit = True
+        else:
+            out.append(line)
+    if not hit:
+        out.insert(0, f'bot_qq: "{qq}"')
+    try:
+        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    except Exception:
+        return False
+    return True

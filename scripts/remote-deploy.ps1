@@ -172,11 +172,12 @@ if (-not (Test-Path $vpy)) {
 
 # ------------------------------------------------------------------ 4. 依赖
 Step "4/9 安装依赖（首次约 1-3 分钟，会看到 pip 输出）"
-& $vpy -m pip install --upgrade pip -q 2>$null
+try { & $vpy -m pip install --upgrade pip -q --disable-pip-version-check 2>&1 | Out-Null } catch { }
+# 国内机器先走镜像，官方源放最后兜底
 $mirrors = @(
-    @(),
     @('-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'),
-    @('-i', 'https://mirrors.aliyun.com/pypi/simple/')
+    @('-i', 'https://mirrors.aliyun.com/pypi/simple/'),
+    @()
 )
 $installed = $false
 foreach ($m in $mirrors) {
@@ -301,8 +302,12 @@ $personaBlock
     Ok "已按参数生成 ticket.yaml"
 }
 
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'   # 让 python 的 stderr 正常显示，再由 $LASTEXITCODE 判定
 & $vpy (Join-Path $InstallDir "autoconfig.py") --ticket $dstTicket --config (Join-Path $InstallDir "config.yaml") --personas (Join-Path $InstallDir "data\personas.yaml")
-if ($LASTEXITCODE -ne 0) { Die "autoconfig 失败（看上面的提示，多为必填项没填）" }
+$acRc = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($acRc -ne 0) { Die "autoconfig 失败（看上面的提示：api.base_url / api_key / model 必填）" }
 Ok "config.yaml / data\personas.yaml 已生成"
 Report "config.yaml: 已生成"
 
@@ -404,20 +409,27 @@ Say "----------------------------------------------"
 Say "安装目录 : $InstallDir"
 Say "Python   : $pyv"
 Say "框架     : NoneBot2 $nbver（nonebot-adapter-onebot）"
-Say "机器人QQ : $Qq"
-Say "白名单   : $Users" 
+Say "机器人QQ : $(if ($Qq) { $Qq } else { '（还没登录，扫码后自动写入 config.yaml）' })"
+Say "白名单   : $(if ($Users) { $Users } else { '（空 —— 待认领：tools\claim.py --auto）' })"
 Say "端口     : 反向WS $Port / 本机接口 $ApiPort"
 Say "服务     : $(if ($started) { '在线' } else { '未验证' })"
 Say "----------------------------------------------"
 Say ""
-Say "剩下必须人工的两步：" Yellow
-Say "  1) 手机 QQ 扫码登录机器人号（第一次必须扫码）"
-Say "  2) 防火墙放行 $ApiPort（本机）与 6099（NapCat 面板，扫完码可关）" Yellow
+Say "----------------------------------------------"
+Say "接下来（按顺序）：" Yellow
+Say "  1) 手机 QQ 扫码登录机器人号（第一次必须扫码；已登录过会自动连上，跳过这步）"
+Say "      需要扫码时执行：.venv\Scripts\python.exe login_qr.py"
+Say "      Windows 防火墙放行 $ApiPort（本机）与 6099（NapCat 面板，扫完码可关）"
+Say "  2) 认领白名单：让对方用自己要聊天的 QQ 给机器人发一句「在吗」"
+Say "     （这时还不会回，正常）然后执行："
+Say "      .venv\Scripts\python.exe tools\claim.py --auto"
+Say "     它会自动把发消息的号加进白名单并热重载，再发一句就能聊"
 Say ""
 Say "验证（在机器人号上给机器人发消息）：" Cyan
 Say "  发 /nb      → 应回复 NoneBot2 版本、连接数、处理器数量"
 Say "  发 ping     → 应回复 pong"
 Say "  发 help     → 应回复指令列表"
+Say "  自检：.venv\Scripts\python.exe selfcheck.py   （要 12/12）"
 Say ""
 Say "日志：$InstallDir\logs\nonebot.log（框架侧）  qq-bridge.log（业务侧）" Gray
 Say "手机端配置台：http://127.0.0.1:$ApiPort/admin" Gray

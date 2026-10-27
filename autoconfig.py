@@ -167,10 +167,12 @@ def main(argv=None) -> int:
     qq = str(robot.get("qq") or "").strip()
 
     problems = []
+    hints = []
     if not qq:
-        problems.append("robot.qq 没填（机器人 QQ 号）")
+        hints.append("robot.qq 没填 —— 没事：扫码登录后会自动把号码写回 config.yaml")
     if not users and not groups:
-        problems.append("allow 没填（至少一个允许聊天的 QQ 号或群号）")
+        hints.append("allow 没填 —— 白名单先空着（谁都不回）；装好后让对方发一条消息，"
+                     "跑 tools/claim.py --auto 一键把对方加进白名单")
     for k in ("base_url", "api_key", "model"):
         if not str(api.get(k) or "").strip():
             problems.append(f"api.{k} 没填")
@@ -179,6 +181,8 @@ def main(argv=None) -> int:
         for p in problems:
             print("  -", p)
         return 2
+    for h in hints:
+        print(f"  提示：{h}")
 
     # 人格 prompt
     if args.polish and str(persona.get("notes") or "").strip() and not str(persona.get("prompt") or "").strip():
@@ -195,7 +199,9 @@ def main(argv=None) -> int:
     cfg = {}
     if cfg_path.exists():
         cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-    cfg["bot_qq"] = qq  # 启动脚本（boot/watchdog/login_qr）读它去静默登录，不写死在代码里
+    if qq:
+        # 启动脚本（boot/watchdog/login_qr）读它去静默登录；没填就等扫码登录后自动写入
+        cfg["bot_qq"] = qq
     ar = cfg.setdefault("autoreply", {})
     llm = ar.setdefault("llm", {})
     llm.update({"enabled": True, "base_url": str(api["base_url"]).strip(),
