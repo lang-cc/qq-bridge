@@ -97,6 +97,8 @@ class HttpApi:
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self.port)
         await site.start()
+        # 访问日志（页面每 8 秒轮询 /status）会淹没有用信息，降到 WARNING
+        logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
         log.info("发送接口已启动: http://%s:%s（token：%s）", self.host, self.port, "已启用" if self.token else "未启用")
 
     async def stop(self) -> None:
@@ -238,7 +240,15 @@ class HttpApi:
 
     async def h_admin_config(self, request: web.Request) -> web.Response:
         self._auth(request)
-        return _j({"autoreply": self._raw().get("autoreply") or {}})
+        raw = self._raw()
+        # allow / robot 一起带上，页面才能显示白名单和机器人号（只读展示）
+        return _j({
+            "autoreply": raw.get("autoreply") or {},
+            "allow": raw.get("allow") or {},
+            "robot": raw.get("robot") or {},
+            "bot_qq": raw.get("bot_qq") or "",
+            "city": raw.get("city") or "",
+        })
 
     async def h_admin_save(self, request: web.Request) -> web.Response:
         self._auth(request)
@@ -393,6 +403,10 @@ class HttpApi:
                 fh.seek(max(0, size - 512 * 1024))  # 只读最后 512KB
                 tail = fh.read().decode("utf-8", "ignore")
             lines = tail.splitlines()[-n:]
+            if request.query.get("clean", "1") not in ("0", "false"):
+                # 默认隐藏访问日志噪声（自己的 /status 轮询会刷屏）
+                noise = ("aiohttp.access", "uvicorn.access", "GET /status", "POST /admin")
+                lines = [ln for ln in lines if not any(k in ln for k in noise)]
             return _j({"ok": True, "file": str(path), "lines": "\n".join(lines)})
         except Exception as exc:
             return _j({"ok": False, "error": repr(exc)})
