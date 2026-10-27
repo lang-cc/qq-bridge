@@ -336,7 +336,7 @@ cd /opt/qqbridge && .venv/bin/python tools/claim.py --status
 - [ ] `ping` 回 `pong`；`help` 回指令列表
 - [ ] 认领成功：`claim.py --auto` 输出「加入白名单」，用户第二次发消息**有回复**
 - [ ] 白名单外的号发消息**完全没反应**
-- [ ] Windows：桌面「QQ机器人」图标能打开网页配置台（`8088/admin`）；Linux：两个 systemd 服务都 active
+- [ ] Windows：桌面三个图标都在 ——「QQ机器人」（拉起服务并打开后台）、「机器人后台」（8088/admin）、「NapCat 面板」（6099）；Linux：两个 systemd 服务都 active
 - [ ] 日志无连续报错（`logs/nonebot.log`、`logs/qq-bridge.log`）
 
 ---

@@ -164,8 +164,20 @@ try {
     $ico = Join-Path $root "assets\qq-bridge.ico"
     if (Test-Path $ico) { $sc.IconLocation = $ico }
     $sc.Save()
-    Say "  桌面已生成「QQ机器人」" Green
+    Say "  桌面已生成「QQ机器人」（双击 = 拉起服务并打开后台）" Green
 } catch { Say "  创建快捷方式失败：$_" Yellow }
+
+# 两个网址也各做一个桌面图标：后台 + NapCat 面板
+try {
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    $ico = Join-Path $root "assets\qq-bridge.ico"
+    $icoLine = if (Test-Path $ico) { "IconFile=$ico`r`nIconIndex=0`r`n" } else { "" }
+    foreach ($u in @(@{n="机器人后台"; u="http://127.0.0.1:8088/admin"}, @{n="NapCat 面板"; u="http://127.0.0.1:6099"})) {
+        $f = Join-Path $desktop ($u.n + ".url")
+        [System.IO.File]::WriteAllText($f, "[InternetShortcut]`r`nURL=$($u.u)`r`n$icoLine", [System.Text.Encoding]::Default)
+        Say "  桌面已生成「$($u.n)」→ $($u.u)" Green
+    }
+} catch { Say "  网址快捷方式失败：$_" Yellow }
 
 # ---------------- 8. 完成 ----------------
 Step 8 "安装完成"

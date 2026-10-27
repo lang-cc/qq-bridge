@@ -235,6 +235,15 @@ PAGE = r"""<!doctype html>
 
   <!-- ============ 概览 ============ -->
   <section class="tab active" id="tab-ov">
+    <div class="card" id="needlogin" style="display:none;border-color:rgba(255,107,107,.42);background:rgba(255,107,107,.06)">
+      <div class="card-h" style="margin-bottom:0">
+        <div>
+          <h2 style="color:#ff9b9b">现在不在线：QQ 号掉登录了</h2>
+          <p>点右上角「扫码登录」，或者打开 NapCat 面板（桌面「NapCat 面板」图标 / 127.0.0.1:6099）用手机 QQ 扫一下。
+             扫完这里会自己变成绿色，不用重启。</p>
+        </div>
+      </div>
+    </div>
     <div class="stats" style="margin-bottom:14px">
       <div class="stat" id="st-conn"><b>—</b><span>QQ 连接</span></div>
       <div class="stat"><b id="st-acct">—</b><span>机器人账号</span></div>
@@ -478,6 +487,7 @@ async function loadStatus() {
     $('st-conn').querySelector('b').textContent = st.connected ? '正常' : '断开';
     $('st-acct').textContent = st.self_id || '—';
     $('st-plug').textContent = st.plugins ?? '—';
+    $('needlogin').style.display = st.connected ? 'none' : 'block';
   } catch (e) { /* 服务正在重启 */ }
 }
 
