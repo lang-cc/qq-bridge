@@ -45,6 +45,23 @@ NoneBot2 进程（框架）
 
 日志：`logs/nonebot.log`（框架侧）、`logs/qq-bridge.log`（业务侧）、`logs/watchdog.log`。
 
+## 插件的开关（网页配置台「插件」页）
+
+每个插件都能单独开 / 关，拨一下就生效，**不用重启**：
+
+- 页面开关 → `POST /admin/plugins/toggle` → 写进 `config.yaml`：
+
+```yaml
+plugins:
+  disabled:
+    - qqbot.plugins.rules_demo
+```
+
+- 派发时 `qqbot/router.py` 直接跳过 `plugin` 在 disabled 里的处理器 —— 被关掉的插件等于没装
+- 框架原生的 `/nb`、`/nbhelp` 用 `nonebot.rule.Rule` 挡：关掉后消息照常落到老引擎
+- 「陪聊引擎」关掉 = 她不说话了；其它插件关掉只影响对应指令
+- 页面上的名字和一句话说明在 `qqbot/plugin_info.py` 的 `NICE` 里维护
+
 ## 加新功能怎么写
 
 两套写法可以并存：

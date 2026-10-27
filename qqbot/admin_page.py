@@ -187,6 +187,16 @@ PAGE = r"""<!doctype html>
   pre.log::-webkit-scrollbar-thumb,.bubbles::-webkit-scrollbar-thumb,.mem-list::-webkit-scrollbar-thumb{
     background:#2b3244;border-radius:9px}
   .hint{font-size:12px;color:var(--dim-2);line-height:1.6}
+  .plug{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--line)}
+  .plug:first-child{border-top:0;padding-top:0}
+  .plug-main{min-width:0;flex:1}
+  .plug-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+  .plug-h b{font-size:13.5px}
+  .plug-h code{font-size:11px;color:var(--dim-2);background:var(--bg2);border:1px solid var(--line);
+    padding:2px 6px;border-radius:6px}
+  .plug .chips{margin-top:8px}
+  .chip.warn{color:var(--warn);border-color:rgba(255,180,84,.35);background:rgba(255,180,84,.1)}
+  .plug .switch{flex:0 0 auto;min-width:86px}
   .out{margin:0;background:#080a0f;border:1px solid var(--line);border-radius:12px;padding:13px;
     font:12.5px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#c3cbdc;
     white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
@@ -226,7 +236,9 @@ PAGE = r"""<!doctype html>
 
   <nav class="tabs">
     <button class="active" data-tab="ov">概览</button>
-    <button data-tab="llm">模型与人格</button>
+    <button data-tab="llm">模型</button>
+    <button data-tab="persona">人格</button>
+    <button data-tab="plug">插件</button>
     <button data-tab="beh">行为</button>
     <button data-tab="mem">记忆</button>
     <button data-tab="log">日志</button>
@@ -308,16 +320,38 @@ PAGE = r"""<!doctype html>
     </div>
 
     <div class="card">
-      <div class="card-h"><div><h2>人格</h2><p>她是谁、怎么说话、和你什么关系 —— 这一段最重要，写得越像真人越好。</p></div></div>
-      <label class="f"><textarea id="persona" placeholder="你是…"></textarea></label>
-    </div>
-
-    <div class="card">
-      <div class="card-h"><div><h2>开关</h2></div></div>
+      <div class="card-h"><div><h2>回复开关</h2><p>关掉 AI 回复，她就只当哑巴（指令插件还能用）。</p></div></div>
       <div class="grid g2">
         <label class="switch"><span>启用 AI 回复</span><input type="checkbox" id="llm_enabled"></label>
         <label class="switch"><span>模拟打字（打字机效果）</span><input type="checkbox" id="typing_enabled"></label>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ 人格 ============ -->
+  <section class="tab" id="tab-persona">
+    <div class="card">
+      <div class="card-h">
+        <div><h2>人格</h2><p>她是谁、怎么说话、和你什么关系 —— 这一段最重要，写得越像真人越好。</p></div>
+        <div class="right"><span class="chip" id="pcount">0 字</span></div>
+      </div>
+      <label class="f"><textarea id="persona" placeholder="你是…"
+        oninput="document.getElementById('pcount').textContent=this.value.length+' 字'"></textarea></label>
+      <div class="hint" style="margin-top:10px">
+        只改这段文字 = 改「当前人格」的说法。要换整套人设和记忆库，在 QQ 里发 <b>人格</b> 看列表、发 <b>切换人格 阿糖</b> 换人；
+        <b>记忆</b> 看她记得你什么，<b>忘记我</b> 清空当前会话。
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 插件 ============ -->
+  <section class="tab" id="tab-plug">
+    <div class="card">
+      <div class="card-h">
+        <div><h2>插件</h2><p>关掉就等于没装这个功能（指令不再响应）。改完立即生效，不用重启。</p></div>
+        <div class="right"><button class="btn ghost sm" onclick="loadPlugins()">刷新</button></div>
+      </div>
+      <div id="pluglist"><div class="hint">读取中…</div></div>
     </div>
   </section>
 
@@ -434,6 +468,7 @@ document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => {
   updateSavebar();
   if (b.dataset.tab === 'mem') loadMemList();
   if (b.dataset.tab === 'log') loadLogs();
+  if (b.dataset.tab === 'plug') loadPlugins();
   window.scrollTo({top: 0, behavior: 'smooth'});
 });
 
@@ -461,6 +496,7 @@ async function reloadConfig() {
   $('tempv').textContent = llm.temperature ?? 0.95;
   $('history').value = llm.history ?? 10;
   $('persona').value = llm.persona || '';
+  $('pcount').textContent = ($('persona').value || '').length + ' 字';
   // 白名单展示（在 autoreply.whitelist 里）
   const allow = a.whitelist || CFG.allow || {};
   const users = allow.users || [], groups = allow.groups || [];
@@ -469,7 +505,7 @@ async function reloadConfig() {
   $('wl-groups').innerHTML = groups.length ? groups.map(g => `<span class="chip">${g}</span>`).join('')
     : '<span class="chip">（没有群）</span>';
   $('st-allow').textContent = users.length;
-  document.querySelectorAll('#tab-llm input,#tab-beh input,#tab-llm textarea').forEach(el => el.oninput = markDirty);
+  document.querySelectorAll('#tab-llm input,#tab-beh input,#tab-persona textarea').forEach(el => el.oninput = markDirty);
   DIRTY = false;
   $('savest').textContent = '（没有改动）';
   updateSavebar();
@@ -509,7 +545,7 @@ function collect() {
 }
 function markDirty() { DIRTY = true; $('savest').textContent = '有改动没保存'; $('savebar').classList.add('show'); }
 function updateSavebar() {
-  const on = ['tab-llm', 'tab-beh'].includes(document.querySelector('section.tab.active')?.id);
+  const on = ['tab-llm', 'tab-persona', 'tab-beh'].includes(document.querySelector('section.tab.active')?.id);
   $('savebar').classList.toggle('show', on);
 }
 async function save() {
@@ -627,6 +663,41 @@ async function loadLogs() {
 function toggleAuto() {
   clearInterval(autoTimer);
   if ($('autolog').checked) autoTimer = setInterval(() => { if (document.querySelector('#tab-log').classList.contains('active')) loadLogs(); }, 5000);
+}
+
+/* ---------- 插件 ---------- */
+async function loadPlugins() {
+  const box = document.getElementById('pluglist');
+  box.innerHTML = '<div class="hint">读取中…</div>';
+  let d;
+  try { d = await (await fetch(A('/admin/plugins'))).json(); }
+  catch (e) { box.innerHTML = '<div class="hint">读取失败（服务在重启？）</div>'; return; }
+  if (!d.ok) { box.innerHTML = '<div class="hint">读取失败：' + esc(d.error || '') + '</div>'; return; }
+  if (!d.plugins.length) { box.innerHTML = '<div class="hint">没有插件</div>'; return; }
+  box.innerHTML = d.plugins.map(function (p) {
+    const cmds = p.commands.length
+      ? p.commands.map(function (c) { return '<span class="chip">' + esc(c) + '</span>'; }).join('')
+      : '<span class="chip">（无指令，靠聊天触发）</span>';
+    const core = p.core ? '<span class="chip warn">关掉她就不说话了</span>' : '';
+    return '<div class="plug"><div class="plug-main">'
+      + '<div class="plug-h"><b>' + esc(p.name) + '</b>' + core + '<code>' + esc(p.id) + '</code></div>'
+      + '<div class="hint">' + esc(p.desc) + ' · ' + p.count + ' 个处理器</div>'
+      + '<div class="chips">' + cmds + '</div></div>'
+      + '<label class="switch"><span>' + (p.enabled ? '开' : '关') + '</span>'
+      + '<input type="checkbox" ' + (p.enabled ? 'checked' : '')
+      + ' onchange="togglePlug(this.getAttribute(\'data-id\'), this.checked)" data-id="' + esc(p.id) + '"></label>'
+      + '</div>';
+  }).join('');
+}
+
+async function togglePlug(id, on) {
+  const r = await fetch(A('/admin/plugins/toggle'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: id, enabled: on})
+  });
+  const d = await r.json();
+  toast(d.ok ? ('已' + (on ? '开启' : '关闭') + '：' + id.split('.').pop()) : ('失败：' + (d.error || '')), !d.ok);
+  loadPlugins();
 }
 
 /* ---------- 用量 ---------- */

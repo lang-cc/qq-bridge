@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
+from .toggles import is_enabled as _enabled
+
 log = logging.getLogger("qqbot.router")
 
 HandlerFn = Callable[[Any, Any], Awaitable[Any]]
@@ -21,6 +23,7 @@ class Handler:
     regex: Optional[re.Pattern] = None
     rule: Optional[Callable[[Any], bool]] = None
     plugin: str = ""
+    desc: str = ""
 
     def match(self, event: Any, text: str) -> bool:
         if self.command is not None:
@@ -61,6 +64,7 @@ class Router:
                     regex=re.compile(regex) if isinstance(regex, str) else regex,
                     rule=rule,
                     plugin=plugin or getattr(fn, "__module__", ""),
+                    desc=desc or ((fn.__doc__ or "").strip().splitlines() or [""])[0],
                 )
             )
             self.handlers.sort(key=lambda h: h.priority)
@@ -78,6 +82,8 @@ class Router:
         text = _AT_PREFIX.sub("", event.message or "").strip()
         event.command_text = text
         for h in list(self.handlers):
+            if h.plugin and not _enabled(h.plugin):
+                continue
             if not h.match(event, text):
                 continue
             try:

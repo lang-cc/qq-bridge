@@ -16,6 +16,7 @@ from nonebot.adapters.onebot.v11 import Bot
 from nonebot.adapters.onebot.v11.event import MessageEvent
 
 from nb.compat import LegacyBot, to_legacy
+from qqbot import toggles
 from qqbot.config import load_config
 
 log = logging.getLogger("nb.bridge")
@@ -53,6 +54,10 @@ def boot() -> None:
             except Exception:
                 log.exception("老插件挂载失败: %s", name)
     _booted = True
+    toggles.bind(SHIM.router, SHIM.config)   # 插件开关（config.yaml 的 plugins.disabled）
+    off = toggles.disabled()
+    if off:
+        log.info("已按配置关掉插件 %d 个：%s", len(off), "、".join(sorted(off)))
     log.info("事件管线就绪｜处理器 %d 个｜指令 %d 条", len(SHIM.router.handlers), len(SHIM.router.commands))
 
 

@@ -91,6 +91,8 @@ class HttpApi:
                 web.post("/admin/watchdog", self.h_admin_watchdog),
                 web.post("/admin/restart", self.h_admin_restart),
                 web.post("/admin/backup", self.h_admin_backup),
+                web.get("/admin/plugins", self.h_admin_plugins),
+                web.post("/admin/plugins/toggle", self.h_admin_plugin_toggle),
             ]
         )
         self._runner = web.AppRunner(app)
@@ -363,6 +365,45 @@ class HttpApi:
         except Exception as exc:
             return _j({"ok": False, "error": repr(exc)})
         return _j({"ok": bool(ok)})
+
+    # ---------------- 插件开关 ----------------
+    def _legacy_router(self):
+        from nb.plugins.legacy_bridge import SHIM
+
+        return SHIM
+
+    async def h_admin_plugins(self, request: web.Request) -> web.Response:
+        self._auth(request)
+        from .plugin_info import build
+        from . import toggles
+
+        shim = self._legacy_router()
+        return _j({
+            "ok": True,
+            "plugins": build(shim.router),
+            "disabled": sorted(toggles.disabled()),
+        })
+
+    async def h_admin_plugin_toggle(self, request: web.Request) -> web.Response:
+        self._auth(request)
+        from . import toggles
+        from .admin import save_config
+
+        data = await self._body(request)
+        pid = str(data.get("id") or "").strip()
+        if not pid:
+            return _j({"ok": False, "error": "缺少插件 id"})
+        enabled = bool(data.get("enabled"))
+        new = toggles.toggle(pid, enabled)
+        raw = self._raw()
+        raw.setdefault("plugins", {})["disabled"] = sorted(new)
+        save_config(raw)
+        try:  # 让内存里的配置也跟上，免得再打开页面读到旧的
+            self._legacy_router().config.raw = raw
+        except Exception:
+            pass
+        log.info("插件开关：%s -> %s", pid, "开" if enabled else "关")
+        return _j({"ok": True, "id": pid, "enabled": enabled, "disabled": sorted(new)})
 
     async def h_admin_usage(self, request: web.Request) -> web.Response:
         """用量统计：/admin/usage?days=7"""

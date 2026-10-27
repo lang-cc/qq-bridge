@@ -12,6 +12,14 @@ import time
 
 import nonebot
 from nonebot import on_command
+from nonebot.rule import Rule
+
+from qqbot import toggles
+
+
+def _on() -> bool:
+    """「插件」页里把「框架指令」关掉后，/nb 就不再认领消息。"""
+    return toggles.is_enabled("nb.plugins.nb_sys")
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent
 from nonebot.params import CommandArg
 
@@ -25,7 +33,7 @@ def _uptime() -> str:
     return f"{h}h{m}m{s}s"
 
 
-nb_cmd = on_command("nb", aliases={"框架状态", "framework"}, priority=3, block=True)
+nb_cmd = on_command("nb", aliases={"框架状态", "framework"}, priority=3, block=True, rule=Rule(_on))
 
 
 @nb_cmd.handle()
@@ -57,7 +65,7 @@ async def _nb_status(bot: Bot, event: MessageEvent, args: Message = CommandArg()
     await nb_cmd.finish("\n".join(lines))
 
 
-nb_help = on_command("nbhelp", aliases={"框架帮助"}, priority=3, block=True)
+nb_help = on_command("nbhelp", aliases={"框架帮助"}, priority=3, block=True, rule=Rule(_on))
 
 
 @nb_help.handle()
