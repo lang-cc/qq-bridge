@@ -22,8 +22,8 @@ from pathlib import Path
 
 log = logging.getLogger("qqbot.growth")
 
-MAX_PER_KIND = 12          # 每类最多留几条
-MAX_AGE_DAYS = 120         # 超过这个时间没被用过就淡出
+MAX_PER_KIND = 500         # 每类最多留几条（硬性规定：500）
+MAX_AGE_DAYS = 180         # 超过这个时间没被用过就淡出
 
 
 def _path(root: str | Path, pid: str, chat_id: str) -> Path:

@@ -816,45 +816,71 @@ class Companion:
             self._diary_task = asyncio.create_task(self._diary_loop())
 
     # ------------------------------------------------------------ 复盘
-    async def _reflect(self, chat_id: str) -> None:
-        if not self._llm_ready():
-            return
-        pid, persona, mem = self._ctx(chat_id)
-        history = mem.recent(chat_id, 30)
-        if len(history) < 6:
-            return
-        convo = "\n".join(f"{'对方' if m['role'] == 'user' else '我'}：{m['content']}" for m in history)
-        # 这类型号忽略 system，复盘指令必须塞进 user 消息，否则它会当成聊天继续演
+    async def _reflect_chunk(self, convo: str) -> dict:
+        """一次复盘调用。这类型号忽略 system，指令必须塞进 user 消息，否则它会当成聊天继续演。"""
         raw = await self._chat(
             [
                 {"role": "system", "content": "你是一个只输出 JSON 的分析器。"},
                 {"role": "user", "content":
                     "【分析任务，不是聊天，不要角色扮演，不要安慰我，只输出 JSON】\n"
-                    + REFLECT_PROMPT + "\n\n对话记录：\n" + convo[:3000]},
+                    + REFLECT_PROMPT + "\n\n对话记录：\n" + convo},
             ],
             temperature=0.3,
         )
         m = re.search(r"\{.*\}", raw, re.S)
         if not m:
-            return
+            return {}
         try:
-            data = json.loads(m.group(0))
+            return json.loads(m.group(0))
         except Exception:
+            return {}
+
+    async def _reflect(self, chat_id: str) -> None:
+        if not self._llm_ready():
+            return
+        pid, persona, mem = self._ctx(chat_id)
+        # 硬性规定：一次复盘读 500 条对话（config: memory.reflect_history）
+        n_msg = int((self.cfg.get("memory") or {}).get("reflect_history") or 500)
+        history = mem.recent(chat_id, max(6, n_msg))
+        if len(history) < 6:
+            return
+        convo = "\n".join(f"{'对方' if m['role'] == 'user' else '我'}：{m['content']}" for m in history)
+
+        # 太长就分块复盘（每块 8000 字，最多 4 块），结果合并，别漏掉前面聊的
+        step = 8000
+        chunks = [convo[i:i + step] for i in range(0, len(convo), step)][:4] or [convo]
+        merged: dict = {"facts": {}, "important": [], "traits": {}, "self": {}}
+        for c in chunks:
+            d = await self._reflect_chunk(c)
+            if not d:
+                continue
+            if d.get("summary"):
+                merged["summary"] = d["summary"]          # 最后一块的总结最新
+            merged["facts"].update(d.get("facts") or {})
+            merged["important"] += [str(x) for x in (d.get("important") or []) if str(x).strip()]
+            for k, v in (d.get("traits") or {}).items():
+                if isinstance(v, (int, float)):
+                    merged["traits"][str(k)] = round(float(v), 2)
+            s = d.get("self") or {}
+            if isinstance(s, dict):
+                for kind in ("opinions", "habits", "voice", "self"):
+                    merged["self"].setdefault(kind, [])
+                    merged["self"][kind] += [str(x) for x in (s.get(kind) or [])]
+        data = merged
+        if not data.get("summary") and not data.get("facts") and not data.get("self"):
             return
         if data.get("summary"):
             mem.set_summary(chat_id, str(data["summary"])[:400])
         for k, v in (data.get("facts") or {}).items():
             mem.upsert_fact(chat_id, k, v)
-        important = [str(x) for x in (data.get("important") or []) if str(x).strip()]
+        important = list(dict.fromkeys(data.get("important") or []))[:3]
         kept = mem.mark_keep(chat_id, important)
-        traits = {
-            str(k): round(float(v), 2) for k, v in (data.get("traits") or {}).items() if isinstance(v, (int, float))
-        }
+        traits = data.get("traits") or {}
         if traits:
             state = mem.get_state("__persona__")
-            merged = dict(state.get("traits") or {})
-            merged.update(traits)
-            mem.set_state("__persona__", state.get("mood") or {}, merged)
+            m2 = dict(state.get("traits") or {})
+            m2.update(traits)
+            mem.set_state("__persona__", state.get("mood") or {}, m2)
         mem.reset_counter(chat_id)
         # 人设成长：把这次复盘里「她自己的变化」并进成长档案
         grew = {}
@@ -868,8 +894,9 @@ class Companion:
         except Exception as exc:
             log.warning("成长档案更新失败：%r", exc)
         log.info(
-            "复盘完成[%s]：事实%d条 性格%d项 永久保留%d条对话 成长观点%d 习惯%d 口头禅%d",
+            "复盘完成[%s]：读了%d条对话(%d块) 事实%d条 性格%d项 永久保留%d条 成长观点%d 习惯%d 口头禅%d",
             persona.get("name"),
+            len(history), len(chunks),
             len(data.get("facts") or {}),
             len(traits),
             kept,

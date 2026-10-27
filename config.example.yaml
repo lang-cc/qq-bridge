@@ -69,6 +69,8 @@ autoreply:
     db: data/memory.db
     history: 100
     reflect_every: 12
+    # 一次复盘读多少条对话（越多学得越全，长文本会自动分块）
+    reflect_history: 500
     root: data
     backup_hours: 6
     backup_keep: 20
