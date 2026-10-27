@@ -17,9 +17,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# 第三方与素材（体积大 / 有各自许可）
+# 第三方与素材（体积大 / 有各自许可，装的时候自动下载）
+# stickers/ 例外：218 张表情包随仓库分发（26MB），下载即用，装完就有表情包
 napcat/
-stickers/
 tools/silk/node_modules/
 tools/silk/*.mp3
 tools/silk/*.silk
@@ -42,6 +42,7 @@ bilibili_video_screenshot.png
 *.png
 !assets/*.png
 !docs/*.png
+!stickers/**/*.png
 
 *.bak
 config.yaml.bak

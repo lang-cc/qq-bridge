@@ -141,15 +141,92 @@ if (-not (Test-Path "data\personas.yaml")) {
 } else { Say "  data\personas.yaml 已存在，保留不动" Green }
 foreach ($d in @("logs", "stickers")) { if (-not (Test-Path $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null } }
 
-# ---------------- 6. Node（语音需要，可选） ----------------
-Step 6 "检查 Node.js（语音功能需要，可选）"
-try {
-    $nodeVer = & node -v 2>$null
-    if ($nodeVer) { Say "  已安装 Node $nodeVer" Green } else { throw "no node" }
-} catch {
+# ---------------- 6. 语音组件（Node + silk-wasm + ffmpeg，可选） ----------------
+# 三步都成功语音才可用；任何一步失败只降级成「只能打字」，不影响聊天。
+Step 6 "准备语音组件（可选，失败只影响语音）"
+
+$voiceOk = $true
+
+# 6.1 Node.js
+$nodeVer = $null
+try { $nodeVer = & node -v 2>$null } catch { $nodeVer = $null }
+if ($nodeVer) {
+    Say "  已安装 Node $nodeVer" Green
+} else {
     Say "  没装 Node.js，语音会退回文字（不影响聊天）" Yellow
-    Say "  需要语音再装：https://nodejs.org/" Yellow
+    Say "  需要语音再装：https://nodejs.org/ （装完重跑本脚本即可）" Yellow
+    $voiceOk = $false
 }
+
+# 6.2 silk-wasm（tools\silk 里 npm install）
+$silkDir = Join-Path $root "tools\silk"
+if (Test-Path (Join-Path $silkDir "node_modules")) {
+    Say "  silk-wasm 已存在，跳过" Green
+} elseif ($voiceOk) {
+    $npmOk = $false
+    foreach ($reg in @('', 'https://registry.npmmirror.com')) {
+        try {
+            Say "  安装 silk-wasm（npm install $reg）..."
+            Push-Location $silkDir
+            if ($reg) { & npm install --omit=dev --no-audit --no-fund --registry $reg 2>&1 | Out-Null }
+            else { & npm install --omit=dev --no-audit --no-fund 2>&1 | Out-Null }
+            Pop-Location
+            if (Test-Path (Join-Path $silkDir "node_modules")) { $npmOk = $true; break }
+        } catch {
+            Pop-Location -ErrorAction SilentlyContinue
+        }
+    }
+    if ($npmOk) {
+        Say "  silk-wasm 已就绪" Green
+    } else {
+        Say "  npm install 失败 → 语音退回文字" Yellow
+        $voiceOk = $false
+    }
+}
+
+# 6.3 ffmpeg（tools\ffmpeg\bin\ffmpeg.exe，79MB，仓库里不带，装的时候下）
+$ffExe = Join-Path $root "tools\ffmpeg\bin\ffmpeg.exe"
+if (Test-Path $ffExe) {
+    Say "  ffmpeg 已存在，跳过下载" Green
+} elseif ($voiceOk) {
+    $ffZip = Join-Path $env:TEMP "ffmpeg-win64.zip"
+    $ffSources = @(
+        "https://ghproxy.net/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://gh-proxy.com/https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    )
+    $ffDone = $false
+    foreach ($src in $ffSources) {
+        try {
+            Say "  下载 ffmpeg（约 190MB）：$src"
+            Invoke-WebRequest -Uri $src -OutFile $ffZip -UseBasicParsing -TimeoutSec 600
+            if ((Test-Path $ffZip) -and ((Get-Item $ffZip).Length -gt 10485760)) {
+                $exDir = Join-Path $env:TEMP ("ffmpeg-x-" + [guid]::NewGuid().ToString("N"))
+                Expand-Archive -Path $ffZip -DestinationPath $exDir -Force
+                $found = Get-ChildItem $exDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+                if ($found) {
+                    New-Item -ItemType Directory -Force -Path (Join-Path $root "tools\ffmpeg\bin") | Out-Null
+                    Copy-Item $found.FullName $ffExe -Force
+                    Remove-Item $exDir -Recurse -Force -ErrorAction SilentlyContinue
+                    Remove-Item $ffZip -Force -ErrorAction SilentlyContinue
+                    Say "  ffmpeg 已就绪" Green
+                    $ffDone = $true
+                    break
+                }
+            }
+            Say "  文件不完整，换下一个源" Yellow
+        } catch {
+            Say "  这个源失败，换下一个" Yellow
+        }
+    }
+    if (-not $ffDone) {
+        Say "  ffmpeg 下载失败 → 语音退回文字" Yellow
+        $voiceOk = $false
+    }
+}
+
+if ($voiceOk) { Say "  语音组件齐全（edge-tts → ffmpeg → silk-wasm）" Green }
+else { Say "  语音不可用，装好 Node.js 后重跑本脚本可补齐" Yellow }
 
 # ---------------- 7. 桌面图标 ----------------
 Step 7 "创建桌面图标"
