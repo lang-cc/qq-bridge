@@ -242,11 +242,9 @@ PAGE = r"""<!doctype html>
     <button class="active" data-tab="ov">概览</button>
     <button data-tab="llm">模型</button>
     <button data-tab="persona">人格</button>
-    <button data-tab="plug">插件</button>
-    <button data-tab="beh">行为</button>
+    <button data-tab="plug">功能</button>
     <button data-tab="mem">记忆</button>
     <button data-tab="log">日志</button>
-    <button data-tab="chat">试聊</button>
   </nav>
 
   <!-- ============ 概览 ============ -->
@@ -263,7 +261,7 @@ PAGE = r"""<!doctype html>
     <div class="stats" style="margin-bottom:14px">
       <div class="stat" id="st-conn"><b>—</b><span>QQ 连接</span></div>
       <div class="stat"><b id="st-acct">—</b><span>机器人账号</span></div>
-      <div class="stat"><b id="st-plug">—</b><span>已加载插件</span></div>
+      <div class="stat"><b id="st-plug">—</b><span>已加载功能</span></div>
       <div class="stat"><b id="st-allow">—</b><span>白名单人数</span></div>
     </div>
 
@@ -367,47 +365,16 @@ PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <!-- ============ 插件 ============ -->
+  <!-- ============ 功能 ============ -->
   <section class="tab" id="tab-plug">
     <div class="card">
       <div class="card-h">
-        <div><h2>插件</h2>
+        <div><h2>功能</h2>
           <p>上面是她身上的功能（心情 / 好感度 / 表情包 / 语音 …），下面是指令插件（ping / 截屏 …）。
              拨一下立即生效，不用重启。</p></div>
         <div class="right"><button class="btn ghost sm" onclick="loadPlugins()">刷新</button></div>
       </div>
       <div id="pluglist"><div class="hint">读取中…</div></div>
-    </div>
-  </section>
-
-  <!-- ============ 行为 ============ -->
-  <section class="tab" id="tab-beh">
-    <div class="card">
-      <div class="card-h"><div><h2>什么时候回</h2></div></div>
-      <div class="grid g2">
-        <label class="switch"><span>启用自动回复</span><input type="checkbox" id="enabled"></label>
-        <label class="switch"><span>回私聊</span><input type="checkbox" id="reply_private"></label>
-        <label class="switch"><span>回群聊</span><input type="checkbox" id="reply_group"></label>
-        <label class="switch"><span>群里只回 @ 我</span><input type="checkbox" id="group_at_only"></label>
-      </div>
-      <div class="grid g2" style="margin-top:14px">
-        <label class="f"><span>群回复概率（0–1）</span><input type="number" id="group_reply_probability" step="0.1" min="0" max="1"></label>
-        <label class="f"><span>冷却（秒）</span><input type="number" id="cooldown" step="0.5" min="0"></label>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-h"><div><h2>怎么说</h2><p>像真人的关键：打字要慢一点、长句要拆成几条。</p></div></div>
-      <div class="grid g2">
-        <label class="switch"><span>长回复自动分段</span><input type="checkbox" id="split_enabled"></label>
-        <label class="f"><span>最多分几条</span><input type="number" id="max_segments" min="1" max="6"></label>
-        <label class="f"><span>每字延迟 ms</span><input type="number" id="per_char_ms" min="0"></label>
-        <label class="f"><span>延迟上限 ms</span><input type="number" id="max_ms" min="0"></label>
-      </div>
-      <div class="grid" style="margin-top:14px">
-        <label class="f"><span>兜底回复（AI 挂了时说）</span>
-          <input type="text" id="fallback" placeholder="等我一下，刚在忙"></label>
-      </div>
     </div>
   </section>
 
@@ -450,20 +417,6 @@ PAGE = r"""<!doctype html>
     </div>
   </section>
 
-  <!-- ============ 试聊 ============ -->
-  <section class="tab" id="tab-chat">
-    <div class="card">
-      <div class="card-h"><div><h2>试聊</h2><p>用当前设置跑一遍，只给你看，不会发到 QQ。</p></div></div>
-      <div class="grid" style="gap:10px">
-        <label class="f"><span>说一句</span>
-          <input type="text" id="testin" value="你是谁啊 怎么突然加我"
-                 onkeydown="if(event.key==='Enter')testChat()"></label>
-      </div>
-      <div class="bubbles" id="testbub" style="margin-top:14px;max-height:none"></div>
-      <div class="hint" id="testmeta" style="margin-top:10px">（还没测）</div>
-      <div style="margin-top:14px"><button class="btn" onclick="testChat()">发送测试</button></div>
-    </div>
-  </section>
 </div>
 
 <div class="savebar" id="savebar">
@@ -501,18 +454,7 @@ document.querySelectorAll('nav.tabs button').forEach(b => b.onclick = () => {
 async function reloadConfig() {
   const r = await fetch(A('/admin/config')); CFG = await r.json();
   const a = CFG.autoreply || {}, llm = a.llm || {}, ty = a.typing || {}, sp = a.split || {};
-  $('enabled').checked = !!a.enabled;
-  $('cooldown').value = a.cooldown ?? 2;
-  $('reply_private').checked = !!a.reply_private;
-  $('reply_group').checked = !!a.reply_group;
-  $('group_at_only').checked = !!a.group_at_only;
-  $('group_reply_probability').value = a.group_reply_probability ?? 1;
-  $('fallback').value = a.fallback || '';
-  $('typing_enabled').checked = !!ty.enabled;
-  $('per_char_ms').value = ty.per_char_ms ?? 55;
-  $('max_ms').value = ty.max_ms ?? 5000;
-  $('split_enabled').checked = !!sp.enabled;
-  $('max_segments').value = sp.max_segments ?? 3;
+  // 「行为」页已删：自动回复 / 分段 / 打字延迟这些项只在 config.yaml 里改，页面不再碰它们
   $('llm_enabled').checked = !!llm.enabled;
   $('base_url').value = llm.base_url || '';
   $('api_key').value = llm.api_key || '';
@@ -530,7 +472,7 @@ async function reloadConfig() {
   $('wl-groups').innerHTML = groups.length ? groups.map(g => `<span class="chip">${g}</span>`).join('')
     : '<span class="chip">（没有群）</span>';
   $('st-allow').textContent = users.length;
-  document.querySelectorAll('#tab-llm input,#tab-beh input,#tab-persona textarea').forEach(el => el.oninput = markDirty);
+  document.querySelectorAll('#tab-llm input,#tab-persona textarea').forEach(el => el.oninput = markDirty);
   DIRTY = false;
   $('savest').textContent = '（没有改动）';
   updateSavebar();
@@ -573,12 +515,6 @@ async function loadStatus() {
 /* ---------- 保存 ---------- */
 function collect() {
   const a = JSON.parse(JSON.stringify(CFG.autoreply || {}));
-  a.enabled = $('enabled').checked; a.cooldown = +$('cooldown').value;
-  a.reply_private = $('reply_private').checked; a.reply_group = $('reply_group').checked;
-  a.group_at_only = $('group_at_only').checked; a.group_reply_probability = +$('group_reply_probability').value;
-  a.fallback = $('fallback').value;
-  a.typing = Object.assign({}, a.typing, {enabled: $('typing_enabled').checked, per_char_ms: +$('per_char_ms').value, max_ms: +$('max_ms').value});
-  a.split = Object.assign({}, a.split, {enabled: $('split_enabled').checked, max_segments: +$('max_segments').value});
   a.llm = Object.assign({}, a.llm, {
     enabled: $('llm_enabled').checked, base_url: $('base_url').value.trim(), api_key: $('api_key').value.trim(),
     model: $('model').value.trim(), temperature: +$('temperature').value, history: +$('history').value,
@@ -588,7 +524,7 @@ function collect() {
 }
 function markDirty() { DIRTY = true; $('savest').textContent = '有改动没保存'; $('savebar').classList.add('show'); }
 function updateSavebar() {
-  const on = ['tab-llm', 'tab-persona', 'tab-beh'].includes(document.querySelector('section.tab.active')?.id);
+  const on = ['tab-llm', 'tab-persona'].includes(document.querySelector('section.tab.active')?.id);
   $('savebar').classList.toggle('show', on);
 }
 async function save() {
@@ -613,20 +549,7 @@ async function loadModels() {
   toast('共 ' + d.models.length + ' 个模型，点一下就能填进去');
 }
 
-/* ---------- 试聊 ---------- */
-async function testChat() {
-  const text = $('testin').value.trim(); if (!text) return;
-  $('testbub').innerHTML = `<div class="bub me">${esc(text)}</div><div class="bub her" id="waiting">正在想…</div>`;
-  const r = await fetch(A('/admin/test'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text, autoreply: collect()})});
-  const d = await r.json();
-  if (d.ok) {
-    $('testbub').innerHTML = `<div class="bub me">${esc(text)}</div><div class="bub her">${esc(d.reply || '(空回复)')}</div>`;
-    $('testmeta').textContent = `${d.model} · ${d.ms}ms` + (d.reasoning ? ' · 带思考' : '');
-  } else {
-    $('testbub').innerHTML = `<div class="bub me">${esc(text)}</div><div class="bub her">（出错）</div>`;
-    $('testmeta').textContent = '出错：' + (d.error || '');
-  }
-}
+
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c])); }
 
 /* ---------- 动作 ---------- */

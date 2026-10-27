@@ -7,8 +7,8 @@
 #>
 $ErrorActionPreference = 'Stop'
 
-# TODO 建仓后填真实仓库（owner/name）
-$Repo   = "__REPO__"
+# 仓库位置（Gitee，owner/name）与分支
+$Repo   = "wangcc111/qq-bridge"
 $Branch = "main"
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Definition)
@@ -32,22 +32,22 @@ Say "`n[1/4] 下载最新代码" Cyan
 $zip = Join-Path $env:TEMP "qq-bridge-update.zip"
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 
-$sources = @(
-    "https://codeload.github.com/$Repo/zip/refs/heads/$Branch",
-    "https://gh-proxy.com/https://codeload.github.com/$Repo/zip/refs/heads/$Branch",
-    "https://ghproxy.net/https://codeload.github.com/$Repo/zip/refs/heads/$Branch",
-    "https://github.com/$Repo/archive/refs/heads/$Branch.zip"
-)
+$src = "https://gitee.com/$Repo/repository/archive/$Branch.zip"
 
 $got = $false
-foreach ($src in $sources) {
+for ($i = 1; $i -le 3; $i++) {
     try {
-        Say "  尝试：$src"
+        Say "  下载（第 $i 次）：$src"
         Invoke-WebRequest -Uri $src -OutFile $zip -UseBasicParsing -TimeoutSec 300
         if ((Test-Path $zip) -and ((Get-Item $zip).Length -gt 1048576)) { $got = $true; break }
-        Say "  包不完整，换下一个源" Yellow
+        Say "  包不完整，重试" Yellow
     } catch {
-        Say "  这个源失败，换下一个" Yellow
+        if ("$_" -match '403') {
+            Say "  403：仓库是私有的，匿名下载被拒。" Red
+            Say "  解决：Gitee 仓库设置里改成公开，或手动下载 ZIP 解压覆盖代码。" Red
+            break
+        }
+        Say "  这次失败，重试" Yellow
     }
 }
 if (-not $got) {

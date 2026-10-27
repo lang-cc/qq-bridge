@@ -489,7 +489,7 @@ class Companion:
 
     async def _cmd_mood(self, event) -> None:
         if not self.fe("mood"):
-            await self.bot.reply(event, "心情这个功能关掉了（配置台「插件」→ 心情）。")
+            await self.bot.reply(event, "心情这个功能关掉了（配置台「功能」→ 心情）。")
             return
         chat_id = f"g{event.group_id}_u{event.user_id}" if event.group_id else f"u{event.user_id}"
         _pid, _persona, mem = self._ctx(chat_id)
@@ -508,7 +508,7 @@ class Companion:
 
     async def _cmd_intimacy(self, event) -> None:
         if not self.fe("intimacy"):
-            await self.bot.reply(event, "好感度这个功能关掉了（配置台「插件」→ 好感度）。")
+            await self.bot.reply(event, "好感度这个功能关掉了（配置台「功能」→ 好感度）。")
             return
         gid = event.group_id
         chat_id = f"g{gid}_u{event.user_id}" if gid else f"u{event.user_id}"
@@ -1416,7 +1416,7 @@ def setup(bot) -> None:
     async def switch_persona(bot, event):
         chat = chat_of(event)
         if not engine.fe("persona"):
-            await bot.reply(event, "现在不让换人格（配置台「插件」→ 人格切换 关着）。")
+            await bot.reply(event, "现在不让换人格（配置台「功能」→ 人格切换 关着）。")
             return True
         arg = (event.command_text or "").replace("切换人格", "").replace("换人格", "").strip()
         target = engine.store.find_by_name(arg)
