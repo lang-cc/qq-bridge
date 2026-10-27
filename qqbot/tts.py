@@ -88,6 +88,52 @@ async def synth(text: str, voice: str = "zh-CN-XiaoyiNeural", rate: str = "+0%",
     return str(dest)
 
 
+def sapi_synth(text: str, out_wav: str | None = None) -> str | None:
+    """本机离线语音（Windows System.Speech / SAPI5，中文一般有 Huihui）。
+
+    edge-tts 走 speech.platform.bing.com，国内经常被掐（连上就 reset）；
+    这时退回系统自带语音，音质差些但照样能发语音条。
+    """
+    import subprocess
+
+    text = (text or "").strip()
+    if not text:
+        return None
+    out_dir = Path("tmp")
+    out_dir.mkdir(exist_ok=True)
+    dest = Path(out_wav) if out_wav else out_dir / f"sapi-{int(time.time())}-{uuid.uuid4().hex[:6]}.wav"
+    dest = dest.resolve()
+    txt_file = (out_dir / f"sapi-{uuid.uuid4().hex[:6]}.txt").resolve()
+    txt_file.write_text(text, encoding="utf-8")
+
+    ps = (
+        "Add-Type -AssemblyName System.Speech;"
+        "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+        "$v=$s.GetInstalledVoices() | Where-Object {$_.VoiceInfo.Culture.Name -like 'zh*'} | Select-Object -First 1;"
+        "if($v){$s.SelectVoice($v.VoiceInfo.Name)};"
+        f"$t=Get-Content -LiteralPath '{txt_file}' -Raw -Encoding UTF8;"
+        f"$s.SetOutputToWaveFile('{dest}');"
+        "$s.Speak($t);"
+        "$s.Dispose()"
+    )
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+            capture_output=True, text=True, timeout=90,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as exc:
+        log.warning("离线语音调用失败：%r", exc)
+        return None
+    finally:
+        txt_file.unlink(missing_ok=True)
+    if dest.exists() and dest.stat().st_size > 2000:
+        log.info("离线语音合成完成：%s（%d 字，%d KB）", dest.name, len(text), dest.stat().st_size // 1024)
+        return str(dest)
+    log.warning("离线语音没产出：%s", (r.stderr or "")[:200])
+    return None
+
+
 async def to_silk(mp3: str) -> str:
     """mp3 → silk，丢线程里跑，别阻塞事件循环。"""
     from .voice import prepare
@@ -121,6 +167,11 @@ async def speak(text: str, voice: str = "zh-CN-XiaoyiNeural", cfg: dict | None =
 
     if not mp3:
         mp3 = await synth(text, voice=cfg.get("voice") or voice)
+    if not mp3:
+        # edge 被掐时的离线兜底：系统自带语音，音质差但能发
+        mp3 = await asyncio.to_thread(sapi_synth, text)
+        if mp3:
+            log.info("edge-tts 不可用，改用本机离线语音")
     if not mp3:
         return None
     silk = await to_silk(mp3)
