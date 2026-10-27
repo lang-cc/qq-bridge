@@ -76,6 +76,17 @@
 
 ---
 
+## 更新到最新版
+
+仓库更新后，已经装好的机器不用重装：
+
+1. 双击安装目录里的 **`更新.bat`**
+2. 脚本会：从仓库下载最新代码 → 现有代码备份到 `backups\` → 只覆盖代码文件 → 自动跑一遍 selfcheck
+3. 到网页配置台点一次「重启」生效（脚本结尾会提示）
+
+**绝不会动**：`config.yaml`、`nb.env`、`data\`（人格 + 记忆）、`napcat\`、`stickers\`、`.venv\`、`logs\`。
+
+---
 ## 日常使用
 
 - **双击桌面「QQ机器人」** → 网页配置台：改模型 / 人设、扫码登录、开掉线自愈、重启服务、保存备份、看记忆和日志、试聊
@@ -92,7 +103,7 @@
 config.yaml            配置（含密钥，已被 .gitignore 排除）
 data/personas.yaml     人格设定（名字、prompt、作息）
 data/personas/*/       每个人格一个 SQLite 记忆库
-stickers/              表情包素材
+stickers/              表情包素材（218 张，随仓库分发）
 napcat/                QQ 协议端（第三方，安装脚本下载）
 logs/                  运行日志
 qqbot/                 主体代码
@@ -101,6 +112,8 @@ qqbot/                 主体代码
   recall.py            BM25 旧事回忆
   makeimg.py           梗图与金句卡
   memory.py            SQLite 记忆层
+更新.bat               一键更新（拉最新代码，保留配置和记忆）
+scripts/update.ps1     更新脚本本体
 open_console.vbs       桌面图标：拉起服务并打开网页配置台
 boot.py                启动器（服务 + NapCat + 看门狗 + 掉线自动扫码）
 watchdog.py            掉线监控
