@@ -167,6 +167,6 @@ Say "白名单：$($Allow -join ', ')" Green
 Say "模型：$Model @ $BaseUrl" Green
 Say ""
 Say "以后操作：" 
-Say "  - 双击桌面「QQ机器人」= 控制面板（启动/扫码/自动修复/备份）"
+Say "  - 双击桌面「QQ机器人」= 网页配置台（改模型/扫码/掉线自愈/重启/备份）"
 Say "  - 掉线会自动重登；实在不行就点「扫码登录」再扫一次"
 Say "  - 日志：$Root\logs\qq-bridge.log"

@@ -43,6 +43,8 @@ PAGE = r"""<!doctype html>
   .bar{display:flex;gap:10px;align-items:center;position:sticky;bottom:0;background:linear-gradient(transparent,var(--bg) 30%);padding:14px 0}
   .hint{font-size:12px;color:var(--dim);margin-top:6px}
   pre{background:#0b0e14;border:1px solid var(--line);border-radius:9px;padding:12px;white-space:pre-wrap;font-size:13px;margin:0;min-height:20px}
+  #logout{max-height:340px;overflow:auto}
+  #memout{max-height:420px;overflow:auto}
   .toast{position:fixed;right:20px;bottom:20px;background:var(--ok);color:#06281c;padding:10px 16px;border-radius:10px;font-weight:600;opacity:0;transition:.25s}
   .toast.show{opacity:1}
 </style>
@@ -125,6 +127,47 @@ PAGE = r"""<!doctype html>
     <pre id="testout">（还没测）</pre>
   </div>
 
+  <div class="card">
+    <h2>动作（原来桌面面板上的按钮都在这儿）</h2>
+    <div class="row">
+      <button class="ghost" onclick="act('/admin/login','扫码登录')">扫码登录</button>
+      <button class="ghost" onclick="act('/admin/watchdog','掉线自愈')">开掉线自愈</button>
+      <button class="ghost" onclick="act('/admin/restart','重启服务')">重启服务</button>
+      <button class="ghost" onclick="act('/admin/backup','保存备份')">保存备份</button>
+    </div>
+    <pre id="actout">（扫码登录：弹二维码窗口；掉线自愈：掉了自动重连；备份会存到 安装目录\backups\）</pre>
+  </div>
+
+  <div class="card">
+    <h2>记忆（它记得什么）</h2>
+    <div class="row">
+      <div class="field" style="flex:2">
+        <label>会话</label>
+        <select id="memchat" onchange="loadMem()"></select>
+      </div>
+      <button class="ghost" onclick="loadMemList()">刷新列表</button>
+      <button class="ghost" onclick="clearMem()">清空这段记忆</button>
+    </div>
+    <div class="hint" id="memmeta"></div>
+    <pre id="memout">（选一个会话，显示最近聊的内容和记住的事实）</pre>
+  </div>
+
+  <div class="card">
+    <h2>日志（出问题看这里）</h2>
+    <div class="row">
+      <div class="field">
+        <label>哪个日志</label>
+        <select id="logfile" onchange="loadLogs()">
+          <option value="qq-bridge">qq-bridge（业务：聊天 / 记忆 / 语音）</option>
+          <option value="nonebot">nonebot（框架：连接 / 事件）</option>
+          <option value="watchdog">watchdog（掉线自愈）</option>
+        </select>
+      </div>
+      <button class="ghost" onclick="loadLogs()">刷新</button>
+    </div>
+    <pre id="logout">（点刷新看最后 200 行）</pre>
+  </div>
+
   <div class="bar">
     <button onclick="save()">保存配置</button>
     <span class="hint" id="saved"></span>
@@ -197,7 +240,66 @@ async function testChat() {
   $('testout').textContent = d.ok ? (d.reply || '(空回复)') + `\n\n— ${d.model} · ${d.ms}ms` : '出错: ' + (d.error||'');
 }
 
-load();
+async function act(path, label) {
+  $('actout').textContent = label + '…';
+  try {
+    const r = await fetch(A(path), {method:'POST'});
+    const d = await r.json();
+    let txt = d.hint || (d.ok ? '已完成' : '失败');
+    if (d.path) txt += `\n存到：${d.path}\n大小 ${d.size_mb} MB · 记忆库 ${d.db} 个 · 对话文件 ${d.chat_files} 个 · 日志 ${d.logs} 个`;
+    if (d.error) txt += '\n' + d.error;
+    $('actout').textContent = txt;
+    toast(label + (d.ok ? ' ✓' : ' ✗'));
+  } catch (e) {
+    $('actout').textContent = label + '：服务正在重启，等 10 秒刷新本页';
+    toast(label + ' 已发出');
+  }
+}
+
+async function loadMemList() {  const r = await fetch(A('/admin/memory')); const d = await r.json();
+  const sel = $('memchat'); sel.innerHTML = '';
+  if (!d.ok) { $('memout').textContent = '读取失败: ' + (d.error||''); return; }
+  if (!d.chats.length) { $('memout').textContent = '还没有任何会话记录（等它聊过天再来）'; return; }
+  d.chats.forEach(c => {
+    const o = document.createElement('option');
+    o.value = c.persona + '|' + c.chat;
+    o.textContent = `${c.chat}（${c.count} 条${c.persona ? ' · ' + c.persona : ''}）`;
+    sel.appendChild(o);
+  });
+  loadMem();
+}
+
+async function loadMem() {
+  const v = $('memchat').value; if (!v) return;
+  const [persona, chat] = v.split('|');
+  $('memout').textContent = '读取中…';
+  const r = await fetch(A('/admin/memory?persona=' + encodeURIComponent(persona) + '&chat=' + encodeURIComponent(chat)));
+  const d = await r.json();
+  if (!d.ok) { $('memout').textContent = '读取失败: ' + (d.error||''); return; }
+  const facts = Object.entries(d.facts || {}).map(([k, v]) => `· ${k}：${v}`).join('\n') || '（还没记住什么事实）';
+  $('memmeta').textContent = `${chat} · ${d.count} 条消息${d.summary ? ' · 有阶段性总结' : ''}`;
+  $('memout').textContent = (d.summary ? '【总结】' + d.summary + '\n\n' : '') + '【记住的事】\n' + facts + '\n\n【最近对话】\n' +
+    (d.recent || []).map(m => (m.role === 'user' ? '他：' : '她：') + m.content).join('\n');
+}
+
+async function clearMem() {
+  const v = $('memchat').value; if (!v) return;
+  const [persona, chat] = v.split('|');
+  if (!confirm('确定清空 ' + chat + ' 的记忆？清完她就完全不记得你们聊过什么了')) return;
+  const r = await fetch(A('/admin/memory/clear'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({persona, chat})});
+  const d = await r.json();
+  toast(d.ok ? '已清空' : '失败: ' + (d.error||''));
+  loadMemList();
+}
+
+async function loadLogs() {
+  $('logout').textContent = '读取中…';
+  const r = await fetch(A('/admin/logs?file=' + $('logfile').value + '&n=200'));
+  const d = await r.json();
+  $('logout').textContent = d.ok ? (d.lines || '(空)') : '读取失败: ' + (d.error || '');
+}
+
+load().then(() => { loadMemList(); loadLogs(); });
 </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 """NoneBot2 启动入口 —— 替代旧的 main.py（自研 OneBot 适配器）。
 
-被 boot.py / watchdog.py / login_qr.py / panel.py 拉起的就是这个文件。
+被 boot.py / watchdog.py / login_qr.py / open_console.vbs 拉起的就是这个文件。
 
 角色分工：
     NoneBot2 + nonebot-adapter-onebot   ← 框架层（连接、事件、插件、日志、生命周期）

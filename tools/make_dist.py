@@ -39,8 +39,6 @@ FILES = [
     "main_nb.py",
     "main.py",
     "boot.py",
-    "panel.py",
-    "console.py",
     "watchdog.py",
     "login_qr.py",
     "selfcheck.py",
@@ -62,7 +60,6 @@ FILES = [
     "stop_all.bat",
     "start_silent.vbs",
     "open_console.vbs",
-    "toggle.vbs",
     "交付说明.md",
     "交付说明-小念.md",
 ]

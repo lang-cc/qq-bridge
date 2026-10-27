@@ -150,15 +150,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1 -InstallDir D:\
 ```
 
 - `"connected": true` → 登录态还在，直接进 A5。
-- `"connected": false` → 拉起扫码窗口：
+- `"connected": false` → 让用户打开网页配置台扫码（也可以用命令）：
 
 ```powershell
+Start-Process "http://127.0.0.1:8088/admin"       # 配置台里点「扫码登录」
+# 等价的命令行方式：
 Start-Process -FilePath "D:\qqbridge\.venv\Scripts\python.exe" -ArgumentList "login_qr.py" -WorkingDirectory "D:\qqbridge"
 ```
 
 告诉用户：
 
-> 屏幕上会弹登录窗口，请用手机 QQ（登录机器人那个号）扫一下，扫完窗口自己会关。
+> 浏览器里那个页面「动作」那一栏有个「扫码登录」按钮，点它，屏幕上会弹二维码窗口，用手机 QQ（登录机器人那个号）扫一下，扫完窗口自己会关。
 
 轮询（最多 3 分钟）：
 
@@ -334,7 +336,7 @@ cd /opt/qqbridge && .venv/bin/python tools/claim.py --status
 - [ ] `ping` 回 `pong`；`help` 回指令列表
 - [ ] 认领成功：`claim.py --auto` 输出「加入白名单」，用户第二次发消息**有回复**
 - [ ] 白名单外的号发消息**完全没反应**
-- [ ] Windows：桌面「QQ机器人」图标能开面板；Linux：两个 systemd 服务都 active
+- [ ] Windows：桌面「QQ机器人」图标能打开网页配置台（`8088/admin`）；Linux：两个 systemd 服务都 active
 - [ ] 日志无连续报错（`logs/nonebot.log`、`logs/qq-bridge.log`）
 
 ---
@@ -367,10 +369,10 @@ Python：____        框架：NoneBot2 ____
 | 不知道服务活着没 | `curl -s http://127.0.0.1:8088/status` |
 | 机器人号 / 白名单现状 | `cd <安装目录> && .venv/Scripts/python.exe tools/claim.py --status`（Linux 用 `.venv/bin/python`） |
 | 机器人不回话 | 先看 `connected`；再看 `logs/qq-bridge.log` 搜「插件处理异常」（多为密钥/模型名/余额）；确认号在白名单 |
-| 掉线 | Windows：面板「扫码登录」；Linux：重开 6099 面板扫码或 `docker restart napcat` |
+| 掉线 | Windows：配置台点「扫码登录」（先点一次「开掉线自愈」以后自动重连）；Linux：重开 6099 面板扫码或 `docker restart napcat` |
 | 端口被占用 | Windows `netstat -ano \| findstr :8088`；Linux `ss -lntp \| grep 8088` |
 | 框架没起来 | Windows `logs\stderr.log`、`logs\nonebot.log`；Linux `journalctl -u qqbridge -n 80` |
-| 改模型（不重启） | 改 `config.yaml` 的 `autoreply.llm` → `curl -X POST http://127.0.0.1:8088/admin/reload`；Windows 也可用面板「模型设置」 |
+| 改模型（不重启） | 网页配置台里改 → 「保存配置」；或改 `config.yaml` 的 `autoreply.llm` → `curl -X POST http://127.0.0.1:8088/admin/reload` |
 | 改人格 | 改 `data/personas.yaml` → 保存即生效 |
 | 回退老版（自研适配器） | 跑 `main.py` 而不是 `main_nb.py`；systemd/lib 里把 `ExecStart` 改回 `main.py` |
 
@@ -385,6 +387,7 @@ Python：____        框架：NoneBot2 ____
 | `logs/nonebot.log` | 框架日志（连接、事件） |
 | `logs/qq-bridge.log` | 业务日志（聊天、记忆、语音、白名单留痕） |
 | `logs/watchdog.log` | 掉线自愈记录 |
+| `backups/` | 配置台「保存备份」导出的 zip（记忆库 + 对话 + 配置 + 日志） |
 | `napcat/`（Linux 为 Docker 容器） | 协议端 + 登录态 |
 
 ---

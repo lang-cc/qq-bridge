@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 from typing import Any
 
 from aiohttp import web
@@ -83,6 +84,13 @@ class HttpApi:
                 web.post("/admin/diary", self.h_admin_diary),
                 web.post("/admin/image", self.h_admin_image),
                 web.get("/admin/usage", self.h_admin_usage),
+                web.get("/admin/logs", self.h_admin_logs),
+                web.get("/admin/memory", self.h_admin_memory),
+                web.post("/admin/memory/clear", self.h_admin_memory_clear),
+                web.post("/admin/login", self.h_admin_login),
+                web.post("/admin/watchdog", self.h_admin_watchdog),
+                web.post("/admin/restart", self.h_admin_restart),
+                web.post("/admin/backup", self.h_admin_backup),
             ]
         )
         self._runner = web.AppRunner(app)
@@ -357,5 +365,193 @@ class HttpApi:
             return _j({"ok": False, "error": "引擎未就绪"})
         try:
             return _j({"ok": True, **engine.usage.summary(days=days)})
+        except Exception as exc:
+            return _j({"ok": False, "error": repr(exc)})
+
+    # ---------------------------------------------------------------- 日志 / 记忆
+    # 原来这两块在独立控制台 console.py（8089）里；现在合并进网页配置台，只留一个后台。
+    async def h_admin_logs(self, request: web.Request) -> web.Response:
+        """看日志尾巴：/admin/logs?file=qq-bridge|nonebot|watchdog&n=200"""
+        self._auth(request)
+        from pathlib import Path
+
+        name = (request.query.get("file") or "qq-bridge").strip()
+        if "/" in name or "\\" in name or ".." in name:
+            return _j({"ok": False, "error": "file 只能是 qq-bridge / nonebot / watchdog"})
+        try:
+            n = max(1, min(2000, int(request.query.get("n") or 200)))
+        except ValueError:
+            n = 200
+
+        path = Path("logs") / f"{name}.log"
+        if not path.exists():
+            return _j({"ok": False, "error": f"还没有 {path}"})
+        try:
+            with path.open("rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 512 * 1024))  # 只读最后 512KB
+                tail = fh.read().decode("utf-8", "ignore")
+            lines = tail.splitlines()[-n:]
+            return _j({"ok": True, "file": str(path), "lines": "\n".join(lines)})
+        except Exception as exc:
+            return _j({"ok": False, "error": repr(exc)})
+
+    @staticmethod
+    def _memory_files() -> list[tuple[str, Any]]:
+        """找出所有记忆库：(人格 id, 路径)。新版每人格一个库，老版是 data/memory.db。"""
+        from pathlib import Path
+
+        out: list[tuple[str, Path]] = []
+        base = Path("data")
+        legacy = base / "memory.db"
+        if legacy.exists():
+            out.append(("", legacy))
+        pdir = base / "personas"
+        if pdir.is_dir():
+            for sub in sorted(pdir.iterdir()):
+                db = sub / "memory.db"
+                if db.is_file():
+                    out.append((sub.name, db))
+        return out
+
+    async def h_admin_memory(self, request: web.Request) -> web.Response:
+        """记忆：不带 chat 列会话；带 chat 返回最近对话 + 记住的事实。"""
+        self._auth(request)
+        from .memory import Memory
+
+        chat = (request.query.get("chat") or "").strip()
+        persona = (request.query.get("persona") or "").strip()
+        files = self._memory_files()
+        if not files:
+            return _j({"ok": True, "chats": []})
+
+        try:
+            if not chat:
+                chats = []
+                for pid, path in files:
+                    mem = Memory(str(path))
+                    for cid in mem.known_chats(limit=50):
+                        chats.append({"persona": pid, "chat": cid,
+                                      "count": mem.message_count(cid)})
+                chats.sort(key=lambda c: c["count"], reverse=True)
+                return _j({"ok": True, "chats": chats})
+
+            target = files[0][1]
+            for pid, path in files:
+                if pid == persona:
+                    target = path
+                    break
+            else:
+                for _pid, path in files:  # 没指定人格就找哪个库里有这个会话
+                    mem = Memory(str(path))
+                    if mem.message_count(chat) > 0:
+                        target = path
+                        break
+            mem = Memory(str(target))
+            recent = mem.recent(chat, limit=40)
+            return _j({
+                "ok": True,
+                "persona": persona,
+                "chat": chat,
+                "count": mem.message_count(chat),
+                "summary": mem.get_summary(chat) or "",
+                "facts": mem.facts(chat) or {},
+                "recent": [{"role": m.get("role"), "content": m.get("content")} for m in recent],
+            })
+        except Exception as exc:
+            return _j({"ok": False, "error": repr(exc)})
+
+    async def h_admin_memory_clear(self, request: web.Request) -> web.Response:
+        """清空某段记忆：{"persona": "xiaoyou", "chat": "u123"}"""
+        self._auth(request)
+        from .memory import Memory
+
+        data = await self._body(request)
+        chat = str(data.get("chat") or "").strip()
+        persona = str(data.get("persona") or "").strip()
+        if not chat:
+            return _j({"ok": False, "error": "chat 必填"})
+        files = self._memory_files()
+        for pid, path in files:
+            if persona and pid != persona:
+                continue
+            try:
+                mem = Memory(str(path))
+                if mem.message_count(chat) > 0:
+                    mem.forget(chat)
+                    return _j({"ok": True, "persona": pid, "chat": chat})
+            except Exception as exc:
+                return _j({"ok": False, "error": repr(exc)})
+        return _j({"ok": False, "error": f"没找到 {chat} 的记忆"})
+
+    # ---------------------------------------------------------------- 动作按钮
+    # 桌面面板删掉之后，扫码登录 / 掉线自愈 / 重启 / 备份 都收到网页配置台上。
+    @staticmethod
+    def _python_exe(windowless: bool = True):
+        """优先用 .venv 里的 python（pythonw 无窗口）。"""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        cand = root / ".venv" / "Scripts" / ("pythonw.exe" if windowless else "python.exe")
+        if cand.exists():
+            return str(cand)
+        return sys.executable
+
+    @staticmethod
+    def _port_open(port: int) -> bool:
+        import socket
+
+        with socket.socket() as s:
+            s.settimeout(0.35)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+
+    def _spawn(self, script: str) -> bool:
+        """后台拉起一个脚本（不阻塞、不影响本服务）。"""
+        import subprocess
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        target = root / script
+        if not target.exists():
+            return False
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen([self._python_exe(), str(target)], cwd=str(root),
+                         close_fds=True, creationflags=flags)
+        return True
+
+    async def h_admin_login(self, request: web.Request) -> web.Response:
+        """拉起扫码登录窗口（QQ 协议端登录）。"""
+        self._auth(request)
+        ok = self._spawn("login_qr.py")
+        return _j({"ok": ok, "hint": "扫码窗口已弹出，用手机 QQ 扫一下" if ok else "没找到 login_qr.py"})
+
+    async def h_admin_watchdog(self, request: web.Request) -> web.Response:
+        """开掉线自愈（watchdog.py，锁端口 9335）。"""
+        self._auth(request)
+        if self._port_open(9335):
+            return _j({"ok": True, "already": True, "hint": "掉线自愈已经在跑了"})
+        ok = self._spawn("watchdog.py")
+        return _j({"ok": ok, "already": False,
+                   "hint": "掉线自愈已开启（掉登录会自动尝试重连）" if ok else "没找到 watchdog.py"})
+
+    async def h_admin_restart(self, request: web.Request) -> web.Response:
+        """重启服务：交给独立脚本做，免得自己杀自己。"""
+        self._auth(request)
+        ok = self._spawn("tools/restart_bot.py")
+        return _j({"ok": ok, "hint": "正在重启，约 10 秒后刷新本页" if ok else "没找到 tools/restart_bot.py"})
+
+    async def h_admin_backup(self, request: web.Request) -> web.Response:
+        """保存备份：记忆库 + 可读对话 + 配置 + 日志 → backups/*.zip"""
+        self._auth(request)
+        from datetime import datetime
+        from pathlib import Path
+
+        from .backup import export_backup
+
+        dest = Path("backups") / f"qq-bridge-备份-{datetime.now():%Y%m%d-%H%M%S}.zip"
+        try:
+            info = await asyncio.to_thread(export_backup, Path(".").resolve(), dest)
+            return _j({"ok": True, **info})
         except Exception as exc:
             return _j({"ok": False, "error": repr(exc)})

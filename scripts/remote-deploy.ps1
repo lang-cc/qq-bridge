@@ -359,7 +359,7 @@ try {
     $ws = New-Object -ComObject WScript.Shell
     $sc = $ws.CreateShortcut($lnk)
     $sc.TargetPath = "$env:WINDIR\System32\wscript.exe"
-    $sc.Arguments = '"' + (Join-Path $InstallDir "toggle.vbs") + '"'
+    $sc.Arguments = '"' + (Join-Path $InstallDir "open_console.vbs") + '"'
     $sc.WorkingDirectory = $InstallDir
     $ico = Join-Path $InstallDir "assets\qq-bridge.ico"
     if (Test-Path $ico) { $sc.IconLocation = $ico }

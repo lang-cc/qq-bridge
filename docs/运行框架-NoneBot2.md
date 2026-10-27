@@ -24,7 +24,7 @@ NoneBot2 进程（框架）
 
 | 文件 | 作用 |
 |---|---|
-| `main_nb.py` | **启动入口**（boot.py / watchdog.py / login_qr.py / panel.py 拉起的都是它） |
+| `main_nb.py` | **启动入口**（boot.py / watchdog.py / login_qr.py / open_console.vbs 拉起的都是它） |
 | `nb.env` | 框架配置：`DRIVER=~fastapi`、`HOST`、`PORT`、`ONEBOT_ACCESS_TOKEN` |
 | `nb/compat.py` | 唯一胶水层：NoneBot 事件 ⇄ 旧 Event，收发接口转接 |
 | `nb/plugins/legacy_bridge.py` | 把 `qqbot/plugins/*` 挂到 NoneBot 事件管线（priority 10） |
@@ -40,7 +40,7 @@ NoneBot2 进程（框架）
 .venv\Scripts\python.exe main_nb.py      :: 前台跑，能看日志
 ```
 
-平时还是双击桌面「QQ机器人」面板（内部走 `boot.py`），或者 `start_all.bat`；
+平时双击桌面「QQ机器人」（会拉起服务并打开网页配置台 `8088/admin`），或者 `start_all.bat`；
 `watchdog.py` 发现服务掉了会自动拉起 `main_nb.py`。
 
 日志：`logs/nonebot.log`（框架侧）、`logs/qq-bridge.log`（业务侧）、`logs/watchdog.log`。
