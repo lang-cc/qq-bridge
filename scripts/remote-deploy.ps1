@@ -366,23 +366,7 @@ try {
     $sc.Save()
     Ok "桌面「QQ机器人」已就绪（双击 = 拉起服务并打开后台）"
 } catch { Warn "快捷方式没建成：$_" }
-
-# 两个网址也各做一个桌面图标：后台 + NapCat 面板
-try {
-    $desktop = [Environment]::GetFolderPath('Desktop')
-    $ico = Join-Path $InstallDir "assets\qq-bridge.ico"
-    $icoLine = if (Test-Path $ico) { "IconFile=$ico`r`nIconIndex=0`r`n" } else { "" }
-    $urls = @(
-        @{ Name = "机器人后台"; Url = "http://127.0.0.1:$ApiPort/admin" },
-        @{ Name = "NapCat 面板"; Url = "http://127.0.0.1:6099" }
-    )
-    foreach ($u in $urls) {
-        $f = Join-Path $desktop ($u.Name + ".url")
-        $body = "[InternetShortcut]`r`nURL=$($u.Url)`r`n$icoLine"
-        [System.IO.File]::WriteAllText($f, $body, [System.Text.Encoding]::Default)
-        Ok "桌面「$($u.Name)」→ $($u.Url)"
-    }
-} catch { Warn "网址快捷方式没建成：$_" }
+# 桌面只留「QQ机器人」一个图标；NapCat 面板从后台概览 / 顶栏一键跳过去
 
 # ------------------------------------------------------------------ 8. 启动
 Step "8/9 启动服务"

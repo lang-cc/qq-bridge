@@ -338,7 +338,7 @@ cd /opt/qqbridge && .venv/bin/python tools/claim.py --status
 - [ ] 白名单外的号发消息**完全没反应**
 - [ ] 网页配置台 8 个标签都能打开；「插件」页把 ping 关掉后发 `ping` 不再回，再打开又回
 - [ ] 「插件」页上半部分（功能）关掉表情包后，她回话不再配图；关掉语音后不再发语音
-- [ ] Windows：桌面三个图标都在 ——「QQ机器人」（拉起服务并打开后台）、「机器人后台」（8088/admin）、「NapCat 面板」（6099）；Linux：两个 systemd 服务都 active
+- [ ] Windows：桌面只有一个「QQ机器人」图标，双击能拉起服务并打开 8088/admin；后台概览里能一键跳到 NapCat 面板（6099）并看到密码；Linux：两个 systemd 服务都 active
 - [ ] 日志无连续报错（`logs/nonebot.log`、`logs/qq-bridge.log`）
 
 ---

@@ -233,6 +233,7 @@ PAGE = r"""<!doctype html>
     <span class="pill" id="pill-conn"><span class="dot"></span><span id="pill-txt">连接中…</span></span>
     <span class="pill" id="pill-acct">账号 —</span>
     <span class="spacer"></span>
+    <a class="btn ghost sm" id="napcat-link" href="http://127.0.0.1:6099" target="_blank" rel="noreferrer">NapCat 面板</a>
     <button class="btn ghost sm" onclick="act('/admin/login','扫码登录')">扫码登录</button>
     <button class="btn ghost sm" onclick="act('/admin/restart','重启服务')">重启</button>
   </header>
@@ -543,6 +544,7 @@ async function loadNapcat() {
     $('napcat-url').value = d.url;
     $('napcat-token').value = d.token || '（没设密码）';
     $('napcat-open').href = d.webui || d.url;
+    $('napcat-link').href = d.webui || d.url;
   } catch (e) { /* 忽略 */ }
 }
 function copyNapcat() {
