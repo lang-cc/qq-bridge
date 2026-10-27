@@ -176,11 +176,11 @@ class Companion:
             self._migrate_legacy(root)
         return self._store
 
-    @property
     def fe(self, name: str) -> bool:
         """功能开关：config.yaml 里 autoreply.<name>.enabled。"""
         return bool((self.cfg.get(name) or {}).get("enabled", True))
 
+    @property
     def stickers(self) -> Stickers:
         if self._stickers is None:
             self._stickers = Stickers((self.cfg.get("stickers") or {}).get("dir") or "stickers")

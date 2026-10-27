@@ -94,6 +94,7 @@ class HttpApi:
                 web.get("/admin/plugins", self.h_admin_plugins),
                 web.post("/admin/plugins/toggle", self.h_admin_plugin_toggle),
                 web.get("/admin/features", self.h_admin_features),
+                web.get("/admin/napcat", self.h_admin_napcat),
                 web.post("/admin/features/toggle", self.h_admin_feature_toggle),
             ]
         )
@@ -406,6 +407,34 @@ class HttpApi:
             pass
         log.info("插件开关：%s -> %s", pid, "开" if enabled else "关")
         return _j({"ok": True, "id": pid, "enabled": enabled, "disabled": sorted(new)})
+
+    async def h_admin_napcat(self, request: web.Request) -> web.Response:
+        """NapCat 面板地址 + 密码（网页配置台主页上要给用户看）。"""
+        self._auth(request)
+        import json
+        from pathlib import Path as _P
+
+        info = {"ok": True, "port": 6099, "token": "", "url": "http://127.0.0.1:6099", "webui": ""}
+        for rel in ("napcat/config/webui.json", "napcat/webui.json"):
+            f = _P(rel)
+            if not f.exists():
+                continue
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception as exc:
+                return _j({"ok": False, "error": "读不了 %s：%r" % (rel, exc)})
+            port = int(data.get("port") or 6099)
+            token = str(data.get("token") or "")
+            info.update({
+                "port": port,
+                "token": token,
+                "url": "http://127.0.0.1:%d" % port,
+                "webui": "http://127.0.0.1:%d/webui?token=%s" % (port, token) if token
+                         else "http://127.0.0.1:%d/webui" % port,
+                "file": rel,
+            })
+            break
+        return _j(info)
 
     # ---------------- 功能开关（心情 / 好感度 / 表情包 / 语音 …） ----------------
     def _engine(self):

@@ -280,6 +280,25 @@ PAGE = r"""<!doctype html>
     </div>
 
     <div class="card">
+      <div class="card-h">
+        <div><h2>NapCat 面板</h2>
+          <p>扫码登录、看 QQ 在不在线、改连接配置都在这里。手机 QQ 扫面板里的二维码即可。</p></div>
+        <div class="right"><a class="btn ghost sm" id="napcat-open" href="http://127.0.0.1:6099"
+             target="_blank" rel="noreferrer">打开面板</a></div>
+      </div>
+      <div class="grid g2">
+        <label class="f"><span>面板地址</span>
+          <input type="text" id="napcat-url" readonly onclick="this.select()"></label>
+        <label class="f"><span>面板密码（token）</span>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="napcat-token" readonly onclick="this.select()" style="flex:1">
+            <button class="btn ghost sm" onclick="copyNapcat()">复制</button>
+          </div>
+          <small>打开面板时如果提示登录，把这个密码填进去</small></label>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-h"><div><h2>白名单</h2><p>只有名单里的人，它才会回话。</p></div></div>
       <div class="block-title">私聊</div>
       <div class="chips" id="wl-users"><span class="chip">—</span></div>
@@ -514,6 +533,23 @@ async function reloadConfig() {
   DIRTY = false;
   $('savest').textContent = '（没有改动）';
   updateSavebar();
+}
+
+/* ---------- NapCat 面板信息 ---------- */
+async function loadNapcat() {
+  try {
+    const d = await (await fetch(A('/admin/napcat'))).json();
+    if (!d.ok) return;
+    $('napcat-url').value = d.url;
+    $('napcat-token').value = d.token || '（没设密码）';
+    $('napcat-open').href = d.webui || d.url;
+  } catch (e) { /* 忽略 */ }
+}
+function copyNapcat() {
+  const v = $('napcat-token').value;
+  navigator.clipboard?.writeText(v).then(() => toast('密码已复制'), () => {
+    $('napcat-token').select(); document.execCommand('copy'); toast('密码已复制');
+  });
 }
 
 /* ---------- 状态 ---------- */
@@ -754,7 +790,7 @@ async function loadUsage() {
 }
 
 /* ---------- 启动 ---------- */
-reloadConfig().then(() => { loadStatus(); loadUsage(); });
+reloadConfig().then(() => { loadStatus(); loadUsage(); loadNapcat(); });
 setInterval(loadStatus, 8000);
 </script>
 </body>
