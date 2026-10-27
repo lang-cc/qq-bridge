@@ -197,6 +197,9 @@ PAGE = r"""<!doctype html>
   .plug .chips{margin-top:8px}
   .chip.warn{color:var(--warn);border-color:rgba(255,180,84,.35);background:rgba(255,180,84,.1)}
   .plug .switch{flex:0 0 auto;min-width:86px}
+  .sec-title{font-size:13px;font-weight:700;color:var(--fg);letter-spacing:.4px;margin:2px 0 10px;
+    padding-bottom:8px;border-bottom:1px solid var(--line-2)}
+  .sec-sub{font-size:11.5px;font-weight:700;color:var(--dim-2);letter-spacing:1px;margin:16px 0 4px}
   .out{margin:0;background:#080a0f;border:1px solid var(--line);border-radius:12px;padding:13px;
     font:12.5px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#c3cbdc;
     white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
@@ -348,7 +351,9 @@ PAGE = r"""<!doctype html>
   <section class="tab" id="tab-plug">
     <div class="card">
       <div class="card-h">
-        <div><h2>插件</h2><p>关掉就等于没装这个功能（指令不再响应）。改完立即生效，不用重启。</p></div>
+        <div><h2>插件</h2>
+          <p>上面是她身上的功能（心情 / 好感度 / 表情包 / 语音 …），下面是指令插件（ping / 截屏 …）。
+             拨一下立即生效，不用重启。</p></div>
         <div class="right"><button class="btn ghost sm" onclick="loadPlugins()">刷新</button></div>
       </div>
       <div id="pluglist"><div class="hint">读取中…</div></div>
@@ -665,38 +670,70 @@ function toggleAuto() {
   if ($('autolog').checked) autoTimer = setInterval(() => { if (document.querySelector('#tab-log').classList.contains('active')) loadLogs(); }, 5000);
 }
 
-/* ---------- 插件 ---------- */
+/* ---------- 插件 = 功能（引擎能力）+ 指令插件（代码文件） ---------- */
+function plugRow(name, tag, desc, enabled, kind, id, cmds) {
+  const chips = (cmds && cmds.length)
+    ? '<div class="chips">' + cmds.map(function (c) { return '<span class="chip">' + esc(c) + '</span>'; }).join('') + '</div>'
+    : '';
+  return '<div class="plug"><div class="plug-main">'
+    + '<div class="plug-h"><b>' + esc(name) + '</b><code>' + esc(tag) + '</code></div>'
+    + '<div class="hint">' + esc(desc) + '</div>' + chips + '</div>'
+    + '<label class="switch"><span>' + (enabled ? '开' : '关') + '</span>'
+    + '<input type="checkbox" ' + (enabled ? 'checked' : '')
+    + ' data-kind="' + kind + '" data-id="' + esc(id) + '" onchange="toggleSwitch(this)"></label>'
+    + '</div>';
+}
+
 async function loadPlugins() {
   const box = document.getElementById('pluglist');
   box.innerHTML = '<div class="hint">读取中…</div>';
-  let d;
-  try { d = await (await fetch(A('/admin/plugins'))).json(); }
-  catch (e) { box.innerHTML = '<div class="hint">读取失败（服务在重启？）</div>'; return; }
-  if (!d.ok) { box.innerHTML = '<div class="hint">读取失败：' + esc(d.error || '') + '</div>'; return; }
-  if (!d.plugins.length) { box.innerHTML = '<div class="hint">没有插件</div>'; return; }
-  box.innerHTML = d.plugins.map(function (p) {
-    const cmds = p.commands.length
-      ? p.commands.map(function (c) { return '<span class="chip">' + esc(c) + '</span>'; }).join('')
-      : '<span class="chip">（无指令，靠聊天触发）</span>';
-    const core = p.core ? '<span class="chip warn">关掉她就不说话了</span>' : '';
-    return '<div class="plug"><div class="plug-main">'
-      + '<div class="plug-h"><b>' + esc(p.name) + '</b>' + core + '<code>' + esc(p.id) + '</code></div>'
-      + '<div class="hint">' + esc(p.desc) + ' · ' + p.count + ' 个处理器</div>'
-      + '<div class="chips">' + cmds + '</div></div>'
-      + '<label class="switch"><span>' + (p.enabled ? '开' : '关') + '</span>'
-      + '<input type="checkbox" ' + (p.enabled ? 'checked' : '')
-      + ' onchange="togglePlug(this.getAttribute(\'data-id\'), this.checked)" data-id="' + esc(p.id) + '"></label>'
-      + '</div>';
-  }).join('');
+  let feat = null, plug = null;
+  try {
+    const rs = await Promise.all([fetch(A('/admin/features')), fetch(A('/admin/plugins'))]);
+    feat = await rs[0].json();
+    plug = await rs[1].json();
+  } catch (e) {
+    box.innerHTML = '<div class="hint">读取失败（服务在重启？）</div>';
+    return;
+  }
+
+  let html = '';
+  if (feat && feat.ok && feat.features.length) {
+    html += '<div class="sec-title">她身上的功能</div>';
+    const groups = {};
+    feat.features.forEach(function (f) { (groups[f.group] = groups[f.group] || []).push(f); });
+    Object.keys(groups).forEach(function (g) {
+      html += '<div class="sec-sub">' + esc(g) + '</div>';
+      html += groups[g].map(function (f) {
+        return plugRow(f.name, f.path, f.desc, f.enabled, 'feature', f.id, null);
+      }).join('');
+    });
+  }
+
+  if (plug && plug.ok && plug.plugins.length) {
+    html += '<div class="sec-title" style="margin-top:24px">指令插件</div>';
+    html += plug.plugins.map(function (p) {
+      return plugRow(p.name, p.id, p.desc + ' · ' + p.count + ' 个处理器', p.enabled, 'plugin', p.id, p.commands);
+    }).join('');
+  }
+
+  box.innerHTML = html || '<div class="hint">没有可显示的内容</div>';
 }
 
-async function togglePlug(id, on) {
-  const r = await fetch(A('/admin/plugins/toggle'), {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({id: id, enabled: on})
-  });
-  const d = await r.json();
-  toast(d.ok ? ('已' + (on ? '开启' : '关闭') + '：' + id.split('.').pop()) : ('失败：' + (d.error || '')), !d.ok);
+async function toggleSwitch(el) {
+  const kind = el.getAttribute('data-kind');
+  const id = el.getAttribute('data-id');
+  const on = el.checked;
+  const url = kind === 'feature' ? '/admin/features/toggle' : '/admin/plugins/toggle';
+  try {
+    const d = await (await fetch(A(url), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: id, enabled: on})
+    })).json();
+    toast(d.ok ? ('已' + (on ? '开启' : '关闭') + '：' + id.split('.').pop()) : ('失败：' + (d.error || '')), !d.ok);
+  } catch (e) {
+    toast('请求失败', true);
+  }
   loadPlugins();
 }
 

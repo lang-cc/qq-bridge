@@ -93,6 +93,8 @@ class HttpApi:
                 web.post("/admin/backup", self.h_admin_backup),
                 web.get("/admin/plugins", self.h_admin_plugins),
                 web.post("/admin/plugins/toggle", self.h_admin_plugin_toggle),
+                web.get("/admin/features", self.h_admin_features),
+                web.post("/admin/features/toggle", self.h_admin_feature_toggle),
             ]
         )
         self._runner = web.AppRunner(app)
@@ -404,6 +406,47 @@ class HttpApi:
             pass
         log.info("插件开关：%s -> %s", pid, "开" if enabled else "关")
         return _j({"ok": True, "id": pid, "enabled": enabled, "disabled": sorted(new)})
+
+    # ---------------- 功能开关（心情 / 好感度 / 表情包 / 语音 …） ----------------
+    def _engine(self):
+        from .plugins import companion as comp
+
+        return getattr(comp, "ENGINE", None)
+
+    async def h_admin_features(self, request: web.Request) -> web.Response:
+        self._auth(request)
+        from .features import build
+
+        engine = self._engine()
+        cfg = dict(getattr(engine, "cfg", None) or self._raw().get("autoreply") or {})
+        return _j({"ok": True, "features": build(cfg)})
+
+    async def h_admin_feature_toggle(self, request: web.Request) -> web.Response:
+        self._auth(request)
+        from .admin import save_config
+        from .features import apply as apply_feature
+
+        data = await self._body(request)
+        fid = str(data.get("id") or "").strip()
+        if not fid:
+            return _j({"ok": False, "error": "缺少功能 id"})
+        enabled = bool(data.get("enabled"))
+
+        raw = self._raw()
+        block = raw.setdefault("autoreply", {})
+        try:
+            apply_feature(block, fid, enabled)
+        except KeyError:
+            return _j({"ok": False, "error": "未知功能：%s" % fid})
+        save_config(raw)
+        engine = self._engine()
+        if engine is not None:
+            try:  # 立即生效：直接改活着的引擎配置
+                apply_feature(engine.cfg, fid, enabled)
+            except Exception as exc:
+                log.warning("功能开关写进运行引擎失败：%r", exc)
+        log.info("功能开关：%s -> %s", fid, "开" if enabled else "关")
+        return _j({"ok": True, "id": fid, "enabled": enabled})
 
     async def h_admin_usage(self, request: web.Request) -> web.Response:
         """用量统计：/admin/usage?days=7"""

@@ -85,6 +85,12 @@ DEFAULTS = {
         "max_chars": 60,
     },
     "video": {"enabled": True, "share_hours": 3, "daily_max": 3, "keywords": []},
+    "persona": {"enabled": True},
+    "life": {"enabled": True},
+    "intimacy": {"enabled": True, "per_msg": 1.0},
+    "grudge": {"enabled": True, "hours": 10},
+    "diary": {"enabled": True, "diary_hour": 23},
+    "douyin": {"enabled": True},
     "proactive": {
         "enabled": False,
         "targets": [],
@@ -171,6 +177,10 @@ class Companion:
         return self._store
 
     @property
+    def fe(self, name: str) -> bool:
+        """功能开关：config.yaml 里 autoreply.<name>.enabled。"""
+        return bool((self.cfg.get(name) or {}).get("enabled", True))
+
     def stickers(self) -> Stickers:
         if self._stickers is None:
             self._stickers = Stickers((self.cfg.get("stickers") or {}).get("dir") or "stickers")
@@ -293,23 +303,25 @@ class Companion:
     def _system_prompt_for(self, chat_id: str) -> str:
         pid, persona, mem = self._ctx(chat_id)
         base = self._system_prompt(pid, persona, mem)
-        summary = mem.get_summary(chat_id)
-        facts = mem.facts(chat_id)
         extra = []
-        if summary:
-            extra.append(f"你记得之前的情况：{summary}")
-        if facts:
-            extra.append("你记得这些事：" + "；".join(f"{k}：{v}" for k, v in list(facts.items())[:12]))
-        diary = mem.kv_get(chat_id, "diary_last")
-        if diary:
-            extra.append(f"你昨晚睡前写的日记（只有你自己知道，可以偶尔流露出这个心情）：{diary}")
+        if self.fe("memory"):
+            summary = mem.get_summary(chat_id)
+            facts = mem.facts(chat_id)
+            if summary:
+                extra.append(f"你记得之前的情况：{summary}")
+            if facts:
+                extra.append("你记得这些事：" + "；".join(f"{k}：{v}" for k, v in list(facts.items())[:12]))
+            diary = mem.kv_get(chat_id, "diary_last")
+            if diary:
+                extra.append(f"你昨晚睡前写的日记（只有你自己知道，可以偶尔流露出这个心情）：{diary}")
         # 跟这个人单独的关系（好感度按人分开记）
-        try:
-            cur = float(mem.kv_get(chat_id, "intimacy", "") or 0)
-            tier_name, tier_hint = life_mod.tier_of(cur)
-            extra.append(f"你跟当前这个人单独的关系：{tier_name}（好感度 {cur:.0f}/1000）。{tier_hint}")
-        except Exception:
-            pass
+        if self.fe("intimacy"):
+            try:
+                cur = float(mem.kv_get(chat_id, "intimacy", "") or 0)
+                tier_name, tier_hint = life_mod.tier_of(cur)
+                extra.append(f"你跟当前这个人单独的关系：{tier_name}（好感度 {cur:.0f}/1000）。{tier_hint}")
+            except Exception:
+                pass
         # 群里都有谁（可以点名 @）
         gm = re.match(r"^g(\d+)", chat_id or "")
         if gm:
@@ -476,6 +488,9 @@ class Companion:
         return 100
 
     async def _cmd_mood(self, event) -> None:
+        if not self.fe("mood"):
+            await self.bot.reply(event, "心情这个功能关掉了（配置台「插件」→ 心情）。")
+            return
         chat_id = f"g{event.group_id}_u{event.user_id}" if event.group_id else f"u{event.user_id}"
         _pid, _persona, mem = self._ctx(chat_id)
         state = mood_mod.load((mem.get_state("__persona__") or {}).get("mood") or {})
@@ -492,6 +507,9 @@ class Companion:
         await self.bot.reply(event, self._compose(say, getattr(event, "group_id", None)))
 
     async def _cmd_intimacy(self, event) -> None:
+        if not self.fe("intimacy"):
+            await self.bot.reply(event, "好感度这个功能关掉了（配置台「插件」→ 好感度）。")
+            return
         gid = event.group_id
         chat_id = f"g{gid}_u{event.user_id}" if gid else f"u{event.user_id}"
         _pid, _persona, mem = self._ctx(chat_id)
@@ -651,6 +669,8 @@ class Companion:
 
     # ------------------------------------------------------------ 日记
     async def _write_diary(self, chat_id: str, force: bool = False) -> str:
+        if not force and not self.fe("diary"):
+            return ""
         pid, persona, mem = self._ctx(chat_id)
         today = time.strftime("%Y-%m-%d")
         if not force and mem.kv_get(chat_id, f"diary_{today}"):
@@ -1088,6 +1108,8 @@ class Companion:
         return True
 
     async def _share_douyin(self, event, chat_id: str) -> bool:
+        if not self.fe("douyin"):
+            return False
         """刷抖音：抓推荐流 → 截屏 → 用自己的口吻分享。抓不到就退回热榜链接。"""
         from .. import douyin as douyin_mod
 
@@ -1393,6 +1415,9 @@ def setup(bot) -> None:
 
     async def switch_persona(bot, event):
         chat = chat_of(event)
+        if not engine.fe("persona"):
+            await bot.reply(event, "现在不让换人格（配置台「插件」→ 人格切换 关着）。")
+            return True
         arg = (event.command_text or "").replace("切换人格", "").replace("换人格", "").strip()
         target = engine.store.find_by_name(arg)
         if not target:

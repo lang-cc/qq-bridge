@@ -45,6 +45,17 @@ NoneBot2 进程（框架）
 
 日志：`logs/nonebot.log`（框架侧）、`logs/qq-bridge.log`（业务侧）、`logs/watchdog.log`。
 
+### 两层开关：功能 与 指令插件
+
+网页配置台「插件」页上有两组，别混：
+
+| 层 | 是什么 | 存在哪 | 代码 |
+|---|---|---|---|
+| **功能** | 引擎里的能力：心情、好感度、记忆、表情包、语音、画图、上网、抖音、主动开聊、日记、人格切换、白名单 | `config.yaml` → `autoreply.<名字>.enabled` | 清单在 `qqbot/features.py` |
+| **指令插件** | `qqbot/plugins/*.py` 文件级的指令插件：help / ping / echo / send_tools / rules_demo、以及框架的 /nb | `config.yaml` → `plugins.disabled` | `qqbot/plugin_info.py` + `qqbot/toggles.py` |
+
+功能开关改的是活着的引擎配置（`ENGINE.cfg`），拨一下就生效；指令插件是路由器派发前跳过，同样不用重启。
+
 ## 插件的开关（网页配置台「插件」页）
 
 每个插件都能单独开 / 关，拨一下就生效，**不用重启**：
