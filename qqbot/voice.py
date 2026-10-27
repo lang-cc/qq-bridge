@@ -94,24 +94,23 @@ def _measure_levels(ffmpeg: str, src: str) -> tuple[float | None, float | None]:
             float(mean.group(1)) if mean else None)
 
 
-def _ffmpeg_to_pcm(ffmpeg: str, src: str, pcm: str) -> None:
-    """转 24k 单声道 PCM，顺便把「听着偏小」的语音顶响一些。
+def _ffmpeg_to_pcm(ffmpeg: str, src: str, pcm: str, cfg: dict | None = None) -> None:
+    """转 24k 单声道 PCM，只做峰值归一化，别的什么都不动。
 
-    做法：先压峰值留出余量，再整体提电平，把平均响度拉到 -4dB 左右
-    （QQ 语音条在手机上大多是外放/小音量，平均电平比峰值更重要）。
+    源头没到满刻度才补一点增益（补到 -0.5dBFS），不加限幅、不加压缩、不套滤镜，
+    保持原本的音色与呼吸感。
     """
-    peak, mean = _measure_levels(ffmpeg, src)
-    filters = ["highpass=f=60"]
-    if mean is not None and mean < -6.0:
-        gain = min(-4.0 - mean, 9.0)
-        filters += ["alimiter=limit=0.45", f"volume={gain:.1f}dB"]
-        log.info("语音响度：平均 %.1fdB（峰值 %.1fdB），提升 %.1fdB", mean, peak if peak is not None else 0, gain)
-    subprocess.run(
-        [ffmpeg, "-y", "-i", src, "-af", ",".join(filters),
-         "-ar", "24000", "-ac", "1", "-f", "s16le", pcm],
-        check=True,
-        capture_output=True,
-    )
+    peak, _ = _measure_levels(ffmpeg, src)
+    filters: list[str] = []
+    if peak is not None and peak < -1.0:
+        gain = min(-0.5 - peak, 12.0)
+        filters.append(f"volume={gain:.1f}dB")
+        log.info("语音峰值归一：原始 %.1fdB，补 %.1fdB", peak, gain)
+    args = [ffmpeg, "-y", "-i", src]
+    if filters:
+        args += ["-af", ",".join(filters)]
+    args += ["-ar", "24000", "-ac", "1", "-f", "s16le", pcm]
+    subprocess.run(args, check=True, capture_output=True)
 
 
 def prepare(src: str, cfg: dict | None = None) -> str:
@@ -131,7 +130,7 @@ def prepare(src: str, cfg: dict | None = None) -> str:
     pcm = os.path.join(workdir, "voice.pcm")
     out = os.path.join(workdir, "voice.silk")
     try:
-        _ffmpeg_to_pcm(ffmpeg, src, pcm)
+        _ffmpeg_to_pcm(ffmpeg, src, pcm, cfg)
     except subprocess.CalledProcessError as exc:
         log.warning("ffmpeg 解码失败（%s），直接发送原文件", exc.stderr[-200:] if exc.stderr else exc)
         return src

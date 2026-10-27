@@ -228,11 +228,11 @@ def sapi_synth(text: str, out_wav: str | None = None) -> str | None:
     return None
 
 
-async def to_silk(mp3: str) -> str:
-    """mp3 → silk，丢线程里跑，别阻塞事件循环。"""
+async def to_silk(mp3: str, cfg: dict | None = None) -> str:
+    """mp3/wav → silk，丢线程里跑，别阻塞事件循环。cfg 里带 loudness 才做响度补偿。"""
     from .voice import prepare
 
-    return await asyncio.to_thread(prepare, mp3)
+    return await asyncio.to_thread(prepare, mp3, cfg)
 
 
 async def speak(text: str, voice: str = "zh-CN-XiaoyiNeural", cfg: dict | None = None) -> str | None:
@@ -291,7 +291,7 @@ async def speak(text: str, voice: str = "zh-CN-XiaoyiNeural", cfg: dict | None =
             log.info("在线 TTS 都不可用，改用本机离线语音")
     if not mp3:
         return None
-    silk = await to_silk(mp3)
+    silk = await to_silk(mp3, cfg)
     if not silk or not silk.lower().endswith((".silk", ".slk")):
         log.warning("silk 转码失败，语音这次跳过：%s", silk)
         return None
