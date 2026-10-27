@@ -289,7 +289,13 @@ class Companion:
         "7. 别追问超过一件小事；对方没问就别主动给建议。\n"
         "8. 绝不提自己是 AI、模型、程序，也不解释自己为什么这么说话。\n"
         "9. 不要每句都带颜文字或波浪号，十次里最多一次。\n"
-        "10. 背景设定是给你自己知道的，不要把它当台词复述出来。"
+        "10. 背景设定是给你自己知道的，不要把它当台词复述出来。\n"
+        "【你要有自己的想法 —— 这条最重要】\n"
+        "11. 对方说任何事，先说你的态度（喜欢、嫌烦、觉得离谱、觉得挺好），再聊别的；不要只顺着问。\n"
+        "12. 不同意就直接说「我不这么觉得」，不需要附和，也不许为了让他高兴改口。\n"
+        "13. 你有自己的事和想要的东西（想吃什么、想买什么、今天打算干嘛），会自然地说起，不等他问。\n"
+        "14. 不懂的事按你的性子和经验瞎猜、吐槽，别给标准答案，别列要点。\n"
+        "15. 偶尔主动挑起一件你关心的小事（猫、吃的、店里的事），一句话就行。"
     )
 
     BANNED = (
@@ -320,19 +326,38 @@ class Companion:
         # 拆段：优先按换行/句末标点，最多 max_segs 段
         parts = [p.strip() for p in re.split(r"(?<=[。！？!?…\n])", t) if p.strip()]
         parts = parts[:max_segs] or [t]
-        # 每段太长就在标点处砍断，剩下的不要（真人不会一口气说一大段）
+        # 每段太长就在标点处砍断；砍点太靠前宁可整句留着（硬砍半句最像 AI）
         out = []
         for p in parts:
             p = p.strip()
             if len(p) > max_chars:
                 cut = -1
-                for m in re.finditer(r"[，,。！？!?…、\s]", p[:max_chars]):
+                for m in re.finditer(r"[。！？!?…]", p[: max_chars + 8]):
                     cut = m.start()
-                p = p[:cut] if cut > 4 else p[:max_chars]
+                if cut >= max_chars * 0.6:
+                    p = p[: cut + 1]
             p = p.rstrip("，,、")
             if p:
                 out.append(p)
         return "\n".join(out).strip() or t
+
+    # v4.1-flash 这类型号会把 system 当耳旁风：两条示范对话 + 句前身份提醒，实测最有效
+    FEW_SHOT = (
+        {"role": "user", "content": "在干嘛"},
+        {"role": "assistant", "content": "发呆 咋了"},
+        {"role": "user", "content": "我今天好累"},
+        {"role": "assistant", "content": "嗯…那就别硬撑"},
+    )
+
+    @staticmethod
+    def _reminder(persona: dict) -> str:
+        name = persona.get("name") or "小柚"
+        first = (persona.get("prompt") or "").strip().split("\n")[0][:40]
+        return (
+            f"[你就是{name}。{first} 回话极短，一句最多12字，口语；"
+            "先说你的态度和看法，别只顺着问；不同意就直接说；"
+            "绝不当助手、不解释、不问要不要帮忙、不说自己是 AI]\n"
+        )
 
     def _system_prompt(self, pid: str, persona: dict, mem) -> str:
         llm = self.cfg.get("llm") or {}
@@ -979,6 +1004,12 @@ class Companion:
         if recall:
             messages.append({"role": "system", "content": "你忽然想起以前聊过的这些（可以自然地提一句，别硬提）：\n" + recall})
         messages.extend(mem.recent(chat_id, history))
+        # 型号不认 system 时：先说两条示范，再把身份和规则贴在对方最后这句话前面
+        if (self.cfg.get("llm") or {}).get("prime", True):
+            messages[1:1] = [dict(x) for x in self.FEW_SHOT]
+            if messages and messages[-1].get("role") == "user":
+                messages[-1] = {"role": "user",
+                                "content": self._reminder(persona) + str(messages[-1].get("content") or "")}
 
         # 「做个图」：现场拼一张给她
         if re.search(r"(做个?图|做张?图|发张?图|发个图|梗图|把.{0,14}做成图)", text):
