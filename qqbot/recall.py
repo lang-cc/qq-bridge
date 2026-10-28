@@ -78,8 +78,15 @@ class Index:
         return out
 
 
-def search_memory(mem, chat_id: str, query: str, skip_recent: int = 100, limit: int = 6) -> list[dict]:
-    """从记忆库里找跟这句相关的旧对话（跳过最近 skip_recent 条）。"""
+def search_memory(
+    mem, chat_id: str, query: str, skip_recent: int = 100, limit: int = 6, min_score: float = 2.0
+) -> list[dict]:
+    """从记忆库里找跟这句相关的旧对话（跳过最近 skip_recent 条）。
+
+    min_score 是相关度门槛：1.2 太宽松，随便一个「发/语」都能捞回几条八竿子打不着
+    的旧事，模型收到「你忽然想起……」就会自己岔开话题。抬到 2.0 之后，
+    只有真的聊到同一件事才会被翻出来。
+    """
     try:
         docs = mem.all_messages(chat_id, limit=3000)
     except Exception:
@@ -91,4 +98,4 @@ def search_memory(mem, chat_id: str, query: str, skip_recent: int = 100, limit: 
         docs = docs[:-skip_recent] if len(docs) > skip_recent else []
     if not docs:
         return []
-    return Index(docs).search(query, limit=limit)
+    return Index(docs).search(query, limit=limit, min_score=min_score)

@@ -3,7 +3,7 @@
 每个人格有：
   - 独立记忆库 data/personas/<id>/memory.db（对话/摘要/事实/心情/性格全隔离）
   - 自己的人设 prompt（data/personas.yaml）
-  - 每个会话可以单独指定用哪个人格（data/memory_router.db），默认用 active
+  - 每个会话固定绑一个人格（data/memory_router.db）：第一次说话时自动绑定，之后不可在聊天里切换
 
 备份：
   - backup() 走 SQLite 在线备份（不锁库、不丢事务），存 data/backups/
@@ -136,12 +136,30 @@ class PersonaStore:
         return conn
 
     def chat_persona(self, chat_id: str) -> str:
+        """这个会话用哪个人格：第一次见到就定下来，之后永久固定。
+
+        一个号只对应一个人格（不能自己在聊天里换）。没绑定过的会话，
+        第一次说话时自动绑到「默认人格」（active），绑定关系写进 memory_router.db，
+        以后改人设文本可以，但不会换人。
+        """
         with self._router() as conn:
             row = conn.execute("SELECT persona FROM route WHERE chat_id=?", (chat_id,)).fetchone()
         pid = row[0] if row else None
-        return pid if pid and self.get(pid) else self.active_id()
+        if pid and self.get(pid):
+            return pid
+        target = self.active_id()
+        if not self.get(target):
+            ps = self.personas()
+            target = ps[0]["id"] if ps else target
+        try:
+            self.bind_persona(chat_id, target)
+            log.info("新会话绑定人格：%s → %s（之后固定，不再变）", chat_id, target)
+        except Exception as exc:
+            log.warning("绑定人格失败：%r", exc)
+        return target
 
-    def set_chat_persona(self, chat_id: str, pid: str) -> bool:
+    def bind_persona(self, chat_id: str, pid: str) -> bool:
+        """把会话绑定到某个人格。只给装机脚本 / 后台用 —— 聊天里已经没有切换入口了。"""
         if not self.get(pid):
             return False
         with self._router() as conn:

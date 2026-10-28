@@ -17,7 +17,6 @@ from typing import Any
 FEATURES: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
     ("llm",       "聊天", "AI 回复",     "调模型回话。关掉她只会用兜底回复", ("llm", "enabled")),
     ("memory",    "聊天", "长期记忆",   "记总结、记事实、写日记。关掉只记得当前几条上下文", ("memory", "enabled")),
-    ("persona",   "聊天", "人格切换",   "允许用「切换人格 阿糖」换人，记忆各自独立", ("persona", "enabled")),
     ("mood",      "像人", "心情",       "她的情绪状态，影响语气和表情包挑选", ("mood", "enabled")),
     ("intimacy",  "像人", "好感度",     "按聊天慢慢涨好感，分陌生/眼熟/亲近几档", ("intimacy", "enabled")),
     ("life",      "像人", "生活感",     "作息、已读不回、半夜不爱回话", ("life", "enabled")),

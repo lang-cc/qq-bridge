@@ -42,6 +42,7 @@ class HttpApi:
         self.port = int(self.cfg.get("port") or 8088)
         self.token = str(self.cfg.get("token") or "")
         self._runner: Any = None
+        self.started_at: float = 0.0          # 服务起跑时间（主页「已运行」用）
 
     # ------------------------------------------------------------ 生命周期
     async def start(self) -> None:
@@ -98,6 +99,7 @@ class HttpApi:
                 web.post("/admin/plugins/toggle", self.h_admin_plugin_toggle),
                 web.get("/admin/features", self.h_admin_features),
                 web.get("/admin/napcat", self.h_admin_napcat),
+                web.get("/admin/health", self.h_admin_health),
                 web.post("/admin/features/toggle", self.h_admin_feature_toggle),
             ]
         )
@@ -105,6 +107,9 @@ class HttpApi:
         await self._runner.setup()
         site = web.TCPSite(self._runner, self.host, self.port)
         await site.start()
+        import time as _t
+        if not self.started_at:
+            self.started_at = _t.time()
         # 访问日志（页面每 8 秒轮询 /status）会淹没有用信息，降到 WARNING
         logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
         log.info("发送接口已启动: http://%s:%s（token：%s）", self.host, self.port, "已启用" if self.token else "未启用")
@@ -438,6 +443,127 @@ class HttpApi:
             })
             break
         return _j(info)
+
+    # ---------------- 主页「服务在线」监控 ----------------
+    async def h_admin_health(self, request: web.Request) -> web.Response:
+        """逐个探一遍：谁在线、谁不在。
+
+        每项都带超时（本地 0.35 秒、外网 1.2 秒），全部不通也只卡一两秒，
+        不会把配置台首页拖死。
+        """
+        self._auth(request)
+        import socket
+        import time
+        from urllib.parse import urlparse
+
+        def tcp(port: int, host: str = "127.0.0.1", timeout: float = 0.35) -> bool:
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    return True
+            except Exception:
+                return False
+
+        def ago(sec: float) -> str:
+            sec = int(max(0, sec))
+            d, sec = divmod(sec, 86400)
+            h, sec = divmod(sec, 3600)
+            m, s = divmod(sec, 60)
+            if d:
+                return f"{d} 天 {h} 小时"
+            if h:
+                return f"{h} 小时 {m} 分"
+            if m:
+                return f"{m} 分 {s} 秒"
+            return f"{s} 秒"
+
+        items: list[dict] = []
+
+        def add(key: str, name: str, ok: bool, detail: str = "", tip: str = "") -> None:
+            items.append({"key": key, "name": name, "ok": bool(ok), "detail": detail, "tip": tip})
+
+        engine = self._engine()
+        cfg = dict(getattr(engine, "cfg", None) or {})
+
+        # 1 机器人服务：能把这个请求答上来，就说明它活着
+        up = time.time() - self.started_at if self.started_at else 0
+        add("service", "机器人服务", True, f"本机 :{self.port} · 已运行 {ago(up)}",
+            "重启：本页「重启服务」")
+
+        # 2 框架层
+        try:
+            import nonebot
+
+            n_ad = len(getattr(nonebot.get_driver(), "_adapters", {}) or {})
+            add("framework", "NoneBot 框架", n_ad > 0,
+                f"nonebot2 {nonebot.__version__} · 处理器 {len(self.bot.router.handlers)} 个",
+                "看 logs/nonebot.log")
+        except Exception as exc:
+            add("framework", "NoneBot 框架", False, repr(exc)[:60], "看 logs/nonebot.log")
+
+        # 3 QQ 登录（反向 WS 有没有连上）
+        try:
+            ws = getattr(self.bot.adapter, "_ws", None)
+        except Exception:
+            ws = None
+        sid = getattr(self.bot, "self_id", 0) or 0
+        add("qq", "QQ 登录", bool(ws) and bool(sid),
+            f"账号 {sid}" if sid else "还没登录",
+            "掉线了在主页点「扫码登录」")
+
+        # 4 NapCat 协议端
+        nc_ok = tcp(6099)
+        add("napcat", "NapCat 协议端", nc_ok,
+            "WebUI :6099 在线" if nc_ok else "6099 连不上",
+            "双击桌面「QQ机器人」会把它拉起来")
+
+        # 5 模型接口（只探 TCP 握手，不发请求、不花钱）
+        llm = cfg.get("llm") or {}
+        base = str(llm.get("base_url") or "")
+        host, port, lat = "—", 0, 0.0
+        llm_ok = False
+        if base:
+            u = urlparse(base if "//" in base else "https://" + base)
+            host = u.hostname or "—"
+            port = u.port or (443 if u.scheme == "https" else 80)
+            t0 = time.perf_counter()
+            llm_ok = tcp(port, host, timeout=1.2)
+            lat = (time.perf_counter() - t0) * 1000
+        add("llm", "模型接口", llm_ok,
+            f"{host}:{port} · {lat:.0f}ms · {llm.get('model') or '未配置'}" if llm_ok
+            else f"{host if base else '未配置'} 连不上",
+            "去「模型」页改 base_url / 密钥")
+
+        # 6 掉线自愈（看门狗占着 9335 当单实例锁）
+        wd_ok = tcp(9335)
+        add("watchdog", "掉线自愈", wd_ok, "看门狗在跑" if wd_ok else "看门狗没起",
+            "本页「开掉线自愈」")
+
+        # 7 语音合成（只看配置是否就绪，不试合成）
+        tts = cfg.get("tts") or {}
+        tts_ok = bool(tts.get("enabled")) and bool(tts.get("provider") or tts.get("api_key"))
+        add("tts", "语音合成", tts_ok,
+            f"{tts.get('provider') or '未配置'} · {str(tts.get('voice') or '')[:40]}" if tts_ok
+            else "没配语音",
+            "config.yaml → autoreply.tts")
+
+        # 8 记忆库（能查就说明库没坏）
+        try:
+            store = engine.store
+            ps = store.personas()
+            n_msg = 0
+            for p in ps:
+                try:
+                    row = store.memory(p["id"])._conn.execute("SELECT COUNT(*) FROM msg").fetchone()
+                    n_msg += int(row[0] or 0) if row else 0
+                except Exception:
+                    pass
+            add("memory", "记忆库", bool(ps), f"{len(ps)} 个人格 · {n_msg} 条对话", "看「记忆」页")
+        except Exception as exc:
+            add("memory", "记忆库", False, repr(exc)[:60], "看「记忆」页")
+
+        online = sum(1 for x in items if x["ok"])
+        return _j({"ok": True, "items": items, "online": online,
+                   "total": len(items), "at": int(time.time())})
 
     # ---------------- 功能开关（心情 / 好感度 / 表情包 / 语音 …） ----------------
     def _engine(self):

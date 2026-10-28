@@ -1,8 +1,8 @@
 """拟人陪聊引擎（多人格 + 长期记忆 + 心情 + 上网 + 表情包 + 主动开聊 + 记忆备份）。
 
-每个人格独立记忆库（data/personas/<id>/memory.db），会话可单独绑定人格：
-  「人格」             看有哪些人格、当前是哪个
-  「切换人格 阿糖」    这个会话换成人格阿糖
+每个人格独立记忆库（data/personas/<id>/memory.db）。一个号固定一个人格：
+第一次说话时自动绑定，之后不能在聊天里换（只留查看）。
+  「人格」             看当前跟你说话的是哪个人格
   「记忆」             看当前人格记得你什么
   「备份记忆」         立刻备份
   「恢复记忆 文件名」   从备份还原
@@ -87,7 +87,6 @@ DEFAULTS = {
         "max_chars": 60,
     },
     "video": {"enabled": True, "share_hours": 3, "daily_max": 3, "keywords": []},
-    "persona": {"enabled": True},
     "life": {"enabled": True},
     "intimacy": {"enabled": True, "per_msg": 1.0},
     "grudge": {"enabled": True, "hours": 10},
@@ -162,6 +161,12 @@ class Companion:
         self._sent_today: dict[str, int] = {}
         self._rosters: dict[str, tuple[float, dict[str, str]]] = {}
         self._day = time.strftime("%Y-%m-%d")
+        # 同一会话的生成串行锁：避免两轮同时生成、各回一句（上句不接下句的根源）
+        self._locks: dict[str, asyncio.Lock] = {}
+        # 生成期间又收到的消息，攒着让当前这轮一起读进上下文
+        self._pending: dict[str, list[str]] = {}
+        # 复盘也不能并发：同一批对话被反复读，人设会被洗乱
+        self._reflect_locks: dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------ 配置/资源
     def refresh(self) -> None:
@@ -410,6 +415,13 @@ class Companion:
         parts.append(self.HUMAN_RULES)
         soft = self._soft_style()
         parts.append(self.HUMAN_RULES_SOFT if soft else self.HUMAN_RULES_ASSERTIVE)
+        # 能力事实：不写清楚，模型会自己编「我发不了语音/只能打字」，
+        # 然后系统又真把这句话合成语音发出去 —— 听着就是在说胡话。
+        parts.append(
+            "【你的能力】你能发文字、能发语音（系统会把你的话合成声音发出去）、"
+            "能发表情包、能发自制的图（梗图/金句卡）、能发链接。"
+            "他要语音你就照常说、别推辞；绝不说「发不了」「只能打字」这种话。"
+        )
         parts.append(
             "需要分享链接时把 URL 直接写进回复。"
             "大多数时候只说话、不要配图；十次里顶多一两次才在末尾加 [表情]。"
@@ -869,6 +881,20 @@ class Companion:
             return {}
 
     async def _reflect(self, chat_id: str) -> None:
+        """复盘入口：同一会话只允许一个复盘在跑。
+
+        以前是裸的 create_task，一轮复盘还没写完，下一条消息又触发一次，
+        四秒内能并发跑四遍，同一批对话被反复喂给模型 —— 洗出来一堆互相打脸的
+        「我的观点」，再注入回每一次回复，人设就漂了。
+        """
+        lock = self._reflect_locks.setdefault(chat_id, asyncio.Lock())
+        if lock.locked():
+            log.info("复盘已在跑，这次跳过")
+            return
+        async with lock:
+            await self._reflect_locked(chat_id)
+
+    async def _reflect_locked(self, chat_id: str) -> None:
         if not self._llm_ready():
             return
         pid, persona, mem = self._ctx(chat_id)
@@ -916,6 +942,12 @@ class Companion:
             m2.update(traits)
             mem.set_state("__persona__", state.get("mood") or {}, m2)
         mem.reset_counter(chat_id)
+        # 游标：记住这次复盘读到第几条，下次只统计它之后新增的消息。
+        # 计数器会被并发回合覆盖，游标不会 —— 这才是「聊满 N 条才复盘一次」的正确实现。
+        try:
+            mem.kv_set(chat_id, "reflect_upto", mem.max_msg_id(chat_id))
+        except Exception as exc:
+            log.warning("复盘游标写入失败：%r", exc)
         # 人设成长：把这次复盘里「她自己的变化」并进成长档案
         grew = {}
         try:
@@ -966,7 +998,62 @@ class Companion:
             return random.random() <= float(self.cfg.get("group_reply_probability") or 1.0)
         return False
 
+    @staticmethod
+    def _chat_key(event) -> str:
+        """跟下面 handle 里算出来的 chat_id 完全一致，提前算好才能加锁。"""
+        if getattr(event, "group_id", None) is not None:
+            if getattr(event, "user_id", None):
+                return f"g{event.group_id}_u{event.user_id}"
+            return f"g{event.group_id}"
+        return f"u{event.user_id}"
+
     async def handle(self, event) -> bool:
+        """入口：同一会话串行处理。
+
+        以前两轮可以同时跑：他连发两句，第一句还在「打字延迟」里睡觉，第二句
+        立刻又开一轮，两轮各生成一句互相不知道的话 —— 表现出来就是上句不接下句、
+        两条回复意思重复。
+
+        现在：正在生成时进来的消息先进队列、写进记忆；当前那轮如果还没读历史，
+        会把它一起带上（一次回答两句）。要是它已经读完历史、正在发送了，那这句
+        就没人回 —— 所以这里再等这轮结束，确认队列里还剩我的话，就自己补回一轮。
+        """
+        key = self._chat_key(event)
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        if not lock.locked():
+            async with lock:
+                return await self._handle_inner(event)
+
+        # 群里没 @ 她的、白名单外的，别趁这个窗口混进记忆里
+        try:
+            if not (self._allowed(event) and self._target_ok(event)):
+                return False
+        except Exception:
+            return False
+        text = (event.command_text or event.message or "").strip()
+        if not text:
+            return True
+        self._pending.setdefault(key, []).append(text)
+        try:
+            self._ctx(key)[2].add_message(key, "user", text)
+        except Exception as exc:
+            log.warning("插话入库失败：%r", exc)
+        log.info("上一轮还在生成，先记下这句等合并：%s", text[:30])
+
+        # 等当前这轮收尾：它把我这句读进去了就不再另回一遍，否则自己补一轮
+        async with lock:
+            rest = self._pending.get(key) or []
+            if text not in rest:
+                return True          # 已被上一轮一并回答
+            rest.remove(text)
+            if rest:
+                self._pending[key] = rest
+            else:
+                self._pending.pop(key, None)
+            log.info("上一轮没读到这句，补回一轮：%s", text[:30])
+            return await self._handle_inner(event, followup=True)
+
+    async def _handle_inner(self, event, followup: bool = False) -> bool:
         self.refresh()
         if not self.cfg.get("enabled"):
             return False
@@ -1029,12 +1116,14 @@ class Companion:
 
         gap = float(self.cfg.get("cooldown") or 0)
         now = time.monotonic()
-        if now - self._last.get(chat_id, 0) < gap:
+        # 补回的那一轮是紧跟在上一轮后面的，跳过冷却；这句刚才也已经入库了，别再存一遍
+        if not followup and now - self._last.get(chat_id, 0) < gap:
             return False
         self._last[chat_id] = now
 
         pid, persona, mem = self._ctx(chat_id)
-        mem.add_message(chat_id, "user", text)
+        if not followup:
+            mem.add_message(chat_id, "user", text)
         if (self.cfg.get("mood") or {}).get("enabled"):
             state = mem.get_state("__persona__")
             state["mood"] = mood_mod.nudge(mood_mod.load(state.get("mood") or {}), text)
@@ -1069,6 +1158,14 @@ class Companion:
             wait += random.uniform(60, 150)
         await asyncio.sleep(max(0.5, min(wait, 180)))
 
+        # 刚才「打字」这段时间里他又补了几句：一起读进去，合成一次回答
+        # （它们已经写进记忆了，所以历史里本来就有；这里把文本拼上，是为了
+        #   让「发个语音」「做个图」这类关键词判断也能命中最新那句）
+        extra = self._pending.pop(chat_id, [])
+        if extra:
+            text = "／".join([text] + extra)
+            log.info("合并 %d 条插话一起回：%s", len(extra), "／".join(extra)[:40])
+
         if not self._llm_ready():
             if self.cfg.get("fallback"):
                 await self._send_text(event, str(self.cfg["fallback"]))
@@ -1087,14 +1184,21 @@ class Companion:
         blocks.append(f"【关系】你和他现在是「{tier_name}」：{tier_hint}。别跳出这个分寸。")
         if angry:
             blocks.append("【情绪】你还在为刚才那句话生气：回得冷、句子短，不哄他、不发表情包、不主动找话题。")
-        elif pcfg.get("enabled", True) and random.random() < 0.55:
-            blocks.append("【主动】这一句后面顺手问他一件小事（今天干嘛了/吃了没/几点睡），只问一件。")
+        elif pcfg.get("enabled", True) and random.random() < 0.12:
+            # 以前是 0.55，一半以上的回复被硬塞一个无关提问，正追问同一件事时
+            # 她突然问「今天干嘛了」—— 这也是「上句不接下句」的来源之一。
+            blocks.append(
+                "【主动】如果他的话本身没什么可接的，可以在末尾顺手问他一件小事"
+                "（今天干嘛了/吃了没/几点睡），只问一件；他正在问你要东西时别岔开。"
+            )
         messages.append({"role": "system", "content": "\n".join(blocks)})
 
         history = int((self.cfg.get("memory") or {}).get("history") or 40)
         recall = self._recall(chat_id, mem, text, skip=history)
         if recall:
-            messages.append({"role": "system", "content": "你忽然想起以前聊过的这些（可以自然地提一句，别硬提）：\n" + recall})
+            messages.append({"role": "system", "content":
+                             "以前聊过这些（只在他这句话正好沾边时才顺口提一句；"
+                             "不沾边就当没想起来，绝对不许拿它岔开当前话题）：\n" + recall})
         messages.extend(mem.recent(chat_id, history))
         # 型号不认 system 时：先说两条示范，再把身份和规则贴在对方最后这句话前面
         if (self.cfg.get("llm") or {}).get("prime", True):
@@ -1147,9 +1251,15 @@ class Companion:
             await self._send_made_image(event, chat_id, answer, kind="quote")
 
         every = int((self.cfg.get("memory") or {}).get("reflect_every") or 12)
-        n = mem.bump_counter(chat_id)
-        if every > 0 and n >= every:
-            asyncio.create_task(self._reflect(chat_id))
+        if every > 0:
+            # 按「上次复盘之后又聊了几句」判断，不用计数器（并发回合下计数器会被覆盖，
+            # 同一批对话会被连洗好几遍）。真正的并发保护在 _reflect 的锁里。
+            try:
+                upto = int(mem.kv_get(chat_id, "reflect_upto", 0) or 0)
+            except Exception:
+                upto = 0
+            if mem.count_since(chat_id, upto) >= every:
+                asyncio.create_task(self._reflect(chat_id))
         return True
 
     # ------------------------------------------------------------ 自己做图
@@ -1586,29 +1696,13 @@ def setup(bot) -> None:
 
     async def show_personas(bot, event):
         chat = chat_of(event)
-        cur = engine.store.chat_persona(chat)
-        active = engine.store.active_id()
-        lines = ["人格列表："]
-        for p in engine.store.personas():
-            mark = " ← 你会话在用的" if p["id"] == cur else ""
-            mark2 = "（默认）" if p["id"] == active else ""
-            lines.append(f"· {p['name']}（{p['id']}）{mark2}{mark}")
-        lines.append("发「切换人格 名字」就可以换人（记忆各自独立）")
-        await bot.reply(event, "\n".join(lines))
-        return True
-
-    async def switch_persona(bot, event):
-        chat = chat_of(event)
-        if not engine.fe("persona"):
-            await bot.reply(event, "现在不让换人格（配置台「功能」→ 人格切换 关着）。")
-            return True
-        arg = (event.command_text or "").replace("切换人格", "").replace("换人格", "").strip()
-        target = engine.store.find_by_name(arg)
-        if not target:
-            await bot.reply(event, f"没有叫「{arg}」的人格，发「人格」看看有哪些。")
-            return True
-        engine.store.set_chat_persona(chat, target["id"])
-        await bot.reply(event, f"好，现在是{target['name']}在跟你说话。")
+        pid, persona, _mem = engine._ctx(chat)
+        name = persona.get("name") or pid
+        await bot.reply(
+            event,
+            f"跟你说话的是{name}（{pid}）。\n"
+            "这个号从一开始就固定是她，不能换人。",
+        )
         return True
 
     async def show_memory(bot, event):
@@ -1661,9 +1755,7 @@ def setup(bot) -> None:
         return True
 
     for cmd in ("人格", "personas"):
-        bot.on_message(command=cmd, priority=850, desc="看有哪些人格")(show_personas)
-    for cmd in ("切换人格", "换人格"):
-        bot.on_message(command=cmd, priority=850, desc="切换人格：切换人格 阿糖")(switch_persona)
+        bot.on_message(command=cmd, priority=850, desc="看你这个号固定是哪个人格")(show_personas)
     for cmd in ("记忆", "memory"):
         bot.on_message(command=cmd, priority=850, desc="看当前人格记得你什么")(show_memory)
     for cmd in ("备份记忆", "记忆备份", "backup"):

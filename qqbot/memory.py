@@ -64,6 +64,25 @@ CREATE TABLE IF NOT EXISTS kv (
 """
 
 
+def _alternate(msgs: list[dict]) -> list[dict]:
+    """把连续同一个角色的消息合并成一条，让历史回到「一问一答」的样子。
+
+    为什么要这么做：两个人同时说话时（他连发两句、或者上一轮还在生成）历史会写成
+    user, user, assistant, assistant。模型读到这种错序上下文，就会答非所问、
+    上句不接下句。合并之后角色严格交替，每轮读到的才是真正的对话。
+    """
+    out: list[dict] = []
+    for m in msgs:
+        c = (m.get("content") or "").strip()
+        if not c:
+            continue
+        if out and out[-1]["role"] == m["role"]:
+            out[-1]["content"] = out[-1]["content"] + "\n" + c
+        else:
+            out.append({"role": m["role"], "content": c})
+    return out
+
+
 class Memory:
     def __init__(self, path: str = "data/memory.db") -> None:
         self.path = Path(path)
@@ -94,7 +113,19 @@ class Memory:
         rows = self._conn.execute(
             "SELECT role, content FROM msg WHERE chat_id=? ORDER BY id DESC LIMIT ?", (chat_id, limit)
         ).fetchall()
-        return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
+        return _alternate([{"role": r["role"], "content": r["content"]} for r in reversed(rows)])
+
+    def max_msg_id(self, chat_id: str) -> int:
+        """这个会话最后一条消息的 id（给复盘游标用）。"""
+        row = self._conn.execute("SELECT MAX(id) FROM msg WHERE chat_id=?", (chat_id,)).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def count_since(self, chat_id: str, msg_id: int) -> int:
+        """id 大于 msg_id 的消息条数，即「上次复盘之后又聊了几句」。"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM msg WHERE chat_id=? AND id>?", (chat_id, int(msg_id or 0))
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
 
     def all_messages(self, chat_id: str, limit: int = 3000) -> list[dict]:
         """按 id 升序取全部消息（给语义检索用）。"""
@@ -156,11 +187,20 @@ class Memory:
         self._conn.commit()
 
     # ---------------------------------------------------------- 事实
+    # 复盘会把她自己说过的蠢话记成「事实」，像「实为AI助手、无实体无性别」
+    # 这种一旦入库，每轮都会贴进 system，她就真的自曝身份了。入闸门挡掉。
+    _AI_LEAK = ("人工智能", "AI助手", "是AI", "语言模型", "大模型", "无实体", "没有实体", "无性别")
+
     def upsert_fact(self, chat_id: str, key: str, value: str) -> None:
+        v = str(value)
+        k = str(key)
+        if any(w in v or w in k for w in self._AI_LEAK):
+            log.info("拦下一条会把身份写崩的事实：%s=%s", k[:20], v[:40])
+            return
         self._conn.execute(
             "INSERT INTO fact(chat_id, key, value, ts) VALUES(?,?,?,?) "
             "ON CONFLICT(chat_id, key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
-            (chat_id, str(key)[:60], str(value)[:300], time.time()),
+            (chat_id, k[:60], v[:300], time.time()),
         )
         self._conn.commit()
 
