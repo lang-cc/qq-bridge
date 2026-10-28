@@ -1,12 +1,80 @@
 # qq-bridge
 
-把一个 QQ 号变成会聊天的「人」：有记忆、有作息、有脾气，会发语音、发图、发自己写的日记。
+把一个 QQ 号变成会聊天的「人」：有记忆、有作息、有脾气，会发语音、发图、发自己写的日记、自己上网刷梗。
 
-本地跑（NapCat + OneBot v11），不依赖任何云服务，聊天只走你自己的模型接口。
+框架 **NoneBot2**（`nonebot2` + `nonebot-adapter-onebot`），入口 `main_nb.py`。
+端口：**8199** 给协议端反向 WS，**8088** 是网页控制台 / 本机 HTTP 接口。
 
-运行框架：**NoneBot2**（`nonebot2` + `nonebot-adapter-onebot`）。启动入口 `main_nb.py`，
-端口没变（8199 给 NapCat 反向 WS，8088 给本机接口/面板）。细节见
-[`docs/运行框架-NoneBot2.md`](docs/运行框架-NoneBot2.md)。旧的 `main.py`（自研适配器）保留可随时回滚。
+---
+
+## 两套部署形态（同一份代码）
+
+| | **本地（Windows）** | **服务器（Linux / 阿里云）** |
+|---|---|---|
+| 协议端 | **SnowLuma**（注入本机 QQNT 客户端） | **NapCat + Docker**（容器里登录 QQ） |
+| QQ 登录 | 本机 QQ 客户端已登录机器人号 | 手机扫码（NapCat WebUI 6099） |
+| 启动方式 | `boot.py` 拉起 SnowLuma + 服务 | systemd `qqbridge` + `docker run napcat` |
+| 控制台 | `http://127.0.0.1:8088/admin`（桌面图标就是它） | `http://<IP>:8088/admin` 或 SSH 隧道 |
+| 需要 Node.js | 是（语音转 silk） | 是（语音转 silk） |
+
+### ⚠️ 哪些文件是 Windows 专用
+
+**Python 代码本身跨平台**，Linux 上照常跑。下列文件只在 Windows 流程里用到，**Linux 部署时直接忽略**：
+
+```
+snowluma/          整目录（Windows QQ 注入用的运行时、.bat、node.exe）
+*.bat              安装.bat 更新.bat run.bat start_all.bat stop_all.bat
+*.ps1 / *.vbs      install.ps1 open_console.vbs
+qqbot/proto.py     只有 boot.py 在 Windows 下拉起 QQ/协议端时才用；Linux 用 main_nb.py 不导入
+```
+
+**跨平台、Linux 也要用的：**
+
+```
+qqbot/  nb/  stickers/  static/  assets/  tools/  scripts/
+main_nb.py  boot.py  login_qr.py  watchdog.py  selfcheck.py  autoconfig.py
+config.example.yaml  personas.example.yaml  requirements.txt
+```
+
+---
+
+## 环境要求
+
+- Windows 10/11 x64 **或** Ubuntu 20.04+ / Debian 11+
+- Python 3.10+（推荐 3.12）
+- **Node.js 18+**（语音转 silk 必需，`tools/silk/encode.mjs` 用它）
+- `ffmpeg`（语音/音频处理）
+- 一个 OpenAI 兼容的模型接口（DeepSeek / 中转站 / 本地 Ollama 都行；看图功能需要支持图片的模型）
+- 协议端二选一：SnowLuma（Windows）或 NapCat（跨平台，Docker 跑）
+
+---
+
+## 快速开始
+
+### A. Windows 本地（SnowLuma）
+
+```powershell
+git clone https://github.com/lang-cc/qq-bridge.git D:\qqbridge
+cd D:\qqbridge
+powershell -ExecutionPolicy Bypass -File install.ps1     # 建 .venv + 装依赖 + 生成 config.yaml
+cd snowluma && .\setup_medium.bat                        # 部署 SnowLuma（需要运行时 zip）
+cd .. && .\.venv\Scripts\python.exe boot.py              # 启动
+```
+
+### B. Linux 服务器（NapCat）
+
+```bash
+apt update && apt install -y python3 python3-venv python3-pip git ffmpeg nodejs npm
+git clone https://github.com/lang-cc/qq-bridge.git /opt/qqbridge && cd /opt/qqbridge
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+cp config.example.yaml config.yaml && cp personas.example.yaml data/personas.yaml
+docker run -d --name napcat --restart unless-stopped --network host \
+  -v /opt/qqbridge/napcat:/app/napcat -e NAPCAT_GID=0 mlikiowa/napcat-docker:latest
+.venv/bin/python main_nb.py        # 生产环境用 systemd 托管
+```
+
+NapCat WebUI（`http://<IP>:6099`）→ 网络配置 → 新增 **WebSocket 反向** → `ws://127.0.0.1:8199/onebot/v11/ws`，
+然后扫码登录机器人 QQ。
 
 ---
 
@@ -15,137 +83,94 @@
 | 能力 | 说明 |
 |---|---|
 | **像人聊天** | 短句、分段、打字延迟、口语，不说「作为 AI」 |
-| **记忆** | 摘要 + 事实 + 最近 100 条上下文 + BM25 旧事回忆 + 每晚日记 |
+| **记忆** | 摘要 + 事实 + 最近 100 条上下文 + BM25 旧事回忆 + 每晚日记；每 5 条消息增量归档 |
 | **性格会变** | 你的语气反馈会慢慢改变她（更黏 / 更丧 / 更话多） |
 | **生活感** | 人格自带作息：忙时回得慢、困了句子短；亲密度分五档换语气；说重话会记仇，哄好才回来 |
-| **主动找你** | 按间隔自己开聊，避开深夜，天冷会提醒你穿衣服 |
-| **语音 / 表情包 / 自制图** | edge-tts 转 silk 语音；206 张表情包还会偷别人的；PIL 现场拼梗图和金句卡 |
+| **主动性** | 按间隔自己开聊、分享刷到的东西、跟你说自己的事、向你提要求 |
+| **看图 / 画图** | 你发的图她会描述（视觉模型）；也能自己拼梗图、金句卡 |
+| **语音 / 表情包** | edge-tts 转 silk 发语音条；200+ 表情包按回复内容挑图，还会偷别人的 |
+| **掉线补偿** | 断线重连后会把没看到的消息补上再接着聊 |
 | **白名单** | 只回你指定的人，其他人一概不理 |
-| **后台** | 网页配置台 `http://127.0.0.1:8088/admin`（6 个标签：概览 / 模型 / 人格 / 功能 / 记忆 / 日志；功能页分两层：上面是她身上的功能（心情 / 好感度 / 表情包 / 语音 / 主动开聊 …），下面是指令插件（ping / help / 截屏 …），每个都能单独关；扫码登录、掉线自愈、重启、备份都在「概览」里）。只有这一个后台，另加 NapCat 面板 6099 管扫码和网络 |
+| **控制台** | `http://<host>:8088/admin`：概览 / 模型 / 人格 / 功能 / 记忆 / 日志，23 个功能开关、节奏与时间参数、记忆备份与导出 |
 
 ---
 
-## 环境要求
+## 配置要点
 
-- Windows 10 / 11 x64
-- Python 3.10+（安装脚本会尝试自动装 3.12）
-- QQ 客户端（官方版，最新）
-- 一个可用的 OpenAI 兼容模型接口（DeepSeek / 中转站 / 本地 Ollama 都行）
-- 可选：Node.js 18+（只有语音功能需要）
+`config.yaml`（从 `config.example.yaml` 复制，**不要提交到仓库**）：
 
----
-
-## 部署（两条线，都有一键脚本）
-
-| 场景 | 一键入口 | 文档 |
-|---|---|---|
-| **A. Windows 本地**（QQ 登录在这台电脑） | `powershell -File deploy.ps1 -ZipPath D:\qq-bridge-full.zip -TicketPath D:\ticket.yaml` | [docs/部署②-Windows本地.md](docs/部署②-Windows本地.md) |
-| **B. Linux 服务器 / 阿里云**（24h 在线） | `QQ=... USERS=... bash <(curl -fsSL .../deploy-linux.sh)` | [docs/部署①-Linux服务器-阿里云.md](docs/部署①-Linux服务器-阿里云.md) |
-| 远程代装（发给客户的 AI 自己跑） | 把任务单发过去 | **[docs/任务单-AI部署.md](docs/任务单-AI部署.md)** |
-| 自己远程操作别人电脑 | 同上，照着操作手一页纸 | [docs/远程代装-操作手一页纸.md](docs/远程代装-操作手一页纸.md) |
-
-打包给别人（自动剔除 `config.yaml` / `nb.env` / `data/` / `logs/` / `.venv` / `napcat/`）：
-
-```bash
-.venv\Scripts\python.exe tools\make_dist.py --all --with-assets --with-napcat
-# → dist/qq-bridge-code.zip（0.3MB，Linux 用）、dist/qq-bridge-full.zip（59MB，Windows 用）
+```yaml
+protocol_backend: snowluma      # 服务器改成 napcat
+onebot11:
+  reverse: {host: 0.0.0.0, port: 8199, path: /onebot/v11/ws}
+http_api:
+  host: 127.0.0.1               # 要让手机/公网访问改 0.0.0.0，并把 token 设成随机串
+  port: 8088
+  token: '<随机串>'
+autoreply:
+  reply_private: true
+  reply_group: true
+  group_at_only: true
+  llm:
+    base_url: <OpenAI 兼容地址>
+    api_key: <密钥>
+    model: <模型名>
+    prime: true                 # 这个型号会忽略 system prompt，必须开
+  whitelist: {enabled: true, users: [<QQ 号>]}
 ```
 
----
-
-## 安装（手动双击版）
-
-1. 下载本仓库（Code → Download ZIP）并解压到任意目录，路径别带特殊符号。
-2. 双击 **`安装.bat`**，等它跑完（约 2-3 分钟）。
-3. 自动弹出设置向导，填 4 页：
-   - 机器人的 QQ 号、允许聊天的 QQ 号、所在城市
-   - 模型接口地址 / 密钥 / 模型名（点「测试连接」验证）
-   - 人格：名字、年龄、身份、说话风格、和对方的关系
-4. 点「完成并启动」。需要时弹出二维码，用手机 QQ 扫码。
-5. 桌面上只有一个 **「QQ机器人」** 图标：双击 = 服务/NapCat 没起就拉起，然后打开网页配置台（`127.0.0.1:8088/admin`）。NapCat 面板从后台概览一键跳转，密码也在那儿显示。
-
-想验收是否装好：
-
-```bash
-.venv\Scripts\python.exe selfcheck.py
-```
-
-12 项全绿即为交付状态（含模型连通性、QQ 连接、白名单、记忆库、掉线监控）。
-
-机器人里发 `/nb` 能看到当前框架版本、连接数、处理器数量（确认 NoneBot2 在跑）。
-
----
-
-## 更新到最新版
-
-仓库更新后，已经装好的机器不用重装：
-
-1. 双击安装目录里的 **`更新.bat`**
-2. 脚本会：从仓库下载最新代码 → 现有代码备份到 `backups\` → 只覆盖代码文件 → 自动跑一遍 selfcheck
-3. 到网页配置台点一次「重启」生效（脚本结尾会提示）
-
-**绝不会动**：`config.yaml`、`nb.env`、`data\`（人格 + 记忆）、`napcat\`、`stickers\`、`.venv\`、`logs\`。
-
----
-## 日常使用
-
-- **双击桌面「QQ机器人」** → 网页配置台：改模型 / 人设、扫码登录、开掉线自愈、重启服务、保存备份、看记忆和日志、试聊
-- **换模型** → 配置台里改模型地址/密钥/名字，点「保存配置」，热重载，不用重启
-- **换人格 / 调作息** → 改 `data/personas.yaml`，保存即生效（代码里每次调用都重读）
-- **备份** → 配置台「保存备份」，导出一个 zip：记忆库＋可读对话记录＋配置＋日志
-- **掉线** → 不用管：看门狗会自动重启 NapCat，实在不行会自己弹二维码
+人格在 `data/personas.yaml`：`name` + `style`（`assertive` 强势 / `soft` 温柔 / `obedient` 小跟班）+ `prompt` + 可选 `examples`（示范对话最有效）。
 
 ---
 
 ## 目录说明
 
 ```
-config.yaml            配置（含密钥，已被 .gitignore 排除）
-data/personas.yaml     人格设定（名字、prompt、作息）
-data/personas/*/       每个人格一个 SQLite 记忆库
-stickers/              表情包素材（218 张，随仓库分发）
-napcat/                QQ 协议端（第三方，安装脚本下载）
-logs/                  运行日志
 qqbot/                 主体代码
-  plugins/companion.py 陪聊引擎（记忆、性格、主动、语音、发图）
+  plugins/companion.py 陪聊引擎（记忆、性格、主动、语音、发图、看图）
+  memory.py            SQLite 记忆层
   life.py              作息 / 亲密度 / 记仇 / 手滑 / 天气
   recall.py            BM25 旧事回忆
-  makeimg.py           梗图与金句卡
-  memory.py            SQLite 记忆层
-更新.bat               一键更新（拉最新代码，保留配置和记忆）
-scripts/update.ps1     更新脚本本体
-open_console.vbs       桌面图标：拉起服务并打开网页配置台
-boot.py                启动器（服务 + NapCat + 看门狗 + 掉线自动扫码）
-watchdog.py            掉线监控
-login_qr.py            扫码登录工具
-selfcheck.py           交付自检
-setup_wizard.py        首次设置向导
+  selfhood.py          自我意识（目的、憋着的话、想提的要求）
+  wander.py            自主上网刷梗
+  humanlike.py         去机器味（句号、拆句、只说半句）
+  catchup.py           掉线补偿
+  vision.py            看图
+  http_api.py / admin_page.py   控制台（8088）
+nb/                    NoneBot2 适配层
+stickers/              表情包素材（随仓库分发）
+snowluma/              Windows 协议端（服务器忽略）
+scripts/deploy-linux.sh, watch_linux.py   Linux 部署与看门狗
+tools/                 silk 编码、重启、隧道等运行时工具
+main_nb.py             启动入口（跨平台）
+boot.py                Windows 一键启动（拉起协议端 + 服务 + 扫码）
+install.ps1 / 安装.bat  Windows 安装
 ```
 
 ---
 
 ## 常见问题
 
+**服务器上跑起来报找不到 node？**
+语音转 silk 需要 Node.js：`apt install -y nodejs npm`，然后 `.venv/bin/python -c "import qqbot.tts"` 自检。
+
 **扫码后一会儿又掉线？**
-NapCat 的登录态和 QQ 版本相关。配置台点一次「开掉线自愈」让看门狗常开，掉线会自动重登；频繁掉线通常是 QQ 在别处登录或版本更新。
+NapCat 登录态和 QQ 版本相关；先在手机上正常登录一次机器人号再扫，并确认内存够（2C4G 起）。
 
 **语音没声音？**
-语音走 edge-tts（需联网）+ Node 转 silk。没装 Node 或网络不通时会自动退回文字，不影响聊天。
-
-**模型报错 / 换 API？**
-配置台里填地址、密钥、模型名 → 「拉取可用模型 / 测试连接」→ 「保存配置」。
+语音走 edge-tts（需联网）+ Node 转 silk；缺任一条件会自动退回文字，不影响聊天。
 
 **会不会乱回别人？**
-白名单开着的时候只回列表里的 QQ，其他人完全不回应（连提示都没有）。
+白名单开着时只回列表里的 QQ，其他人完全不回应。
 
 ---
 
 ## 注意
 
-- 本项目的 QQ 接入依赖 [NapCatQQ](https://github.com/NapNeko/NapCatQQ)（第三方，AGPL-3.0），请遵守其许可与腾讯的服务条款。
-- 用自动化账号存在被风控的可能，建议使用小号，不要用于批量加好友/群发。
-- 模型调用按量计费。100 条上下文约为每次 4k tokens；给客户部署时请设置日限额。
+- QQ 接入依赖第三方协议端：[NapCatQQ](https://github.com/NapNeko/NapCatQQ)（AGPL-3.0）或 SnowLuma，请遵守其许可与腾讯服务条款。
+- 自动化账号存在风控风险，建议用小号，不要批量加好友/群发。
+- 模型按量计费：100 条上下文约 4k tokens/次；对外部署请设日限额。
 
 ## License
 
-MIT（本仓库自有代码）。NapCat 与 QQ 客户端遵循各自许可。
+MIT（本仓库自有代码）。NapCat / SnowLuma / QQ 客户端遵循各自许可。
