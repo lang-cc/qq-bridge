@@ -63,3 +63,6 @@ data/conn.json
 data/growth/
 data/voice/
 data/sticker_trash/
+
+# 运行时二进制（部署时由 setup 脚本下载，别进仓库）
+snowluma/node.exe
