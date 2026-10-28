@@ -2,8 +2,9 @@
 
 规则（每 45 秒看一次）：
 - 服务（8088）没在跑  → 拉起
-- NapCat（6099）没在跑 → 拉起
-- 服务在跑但 QQ 连不上超过 3 分钟 → 重启 NapCat；再等 2 分钟还不行 → 弹二维码等扫码
+- 协议端（NapCat 6099 / SnowLuma 5099）没在跑 → 拉起
+- 服务在跑但 QQ 连不上超过 3 分钟 → 重启协议端；再等 2 分钟还不行 → 等扫码
+后端由 config.yaml 的 protocol_backend 决定，具体差异见 qqbot/proto.py。
 所有动作写 logs/watchdog.log。
 """
 
@@ -26,9 +27,11 @@ LOGS.mkdir(exist_ok=True)
 LOCK_PORT = 9335
 
 sys.path.insert(0, str(ROOT))
-from qqbot.account import bot_account, napcat_launch_args  # noqa: E402
+from qqbot import proto  # noqa: E402
+from qqbot.account import bot_account  # noqa: E402
 
 ACCOUNT = bot_account(ROOT)  # 不写死 QQ 号：同一份包谁装都行
+BACKEND = proto.backend(ROOT)
 
 log = logging.getLogger("watchdog")
 log.setLevel(logging.INFO)
@@ -90,19 +93,15 @@ def start_service() -> None:
 
 
 def start_napcat(quiet: bool = True) -> None:
-    bat = ROOT / "napcat" / "launcher-user-silent.bat"
-    if not bat.exists():
-        log.error("找不到 NapCat 启动脚本")
-        return
-    subprocess.Popen(["cmd", "/c", str(bat), *napcat_launch_args(ACCOUNT, quiet=quiet)],
-                     cwd=str(ROOT / "napcat"),
-                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    log.info("已拉起 NapCat%s（账号 %s）", "（静默）" if quiet else "", ACCOUNT or "未指定")
+    """名字留着（外部有引用），实际按后端分发。"""
+    if proto.start(ROOT, ACCOUNT, quiet=quiet):
+        log.info("已拉起协议端 %s（账号 %s）", BACKEND, ACCOUNT or "未指定")
+    else:
+        log.error("协议端 %s 起不来，检查目录是否完整", BACKEND)
 
 
 def kill_qq() -> None:
-    subprocess.run(["cmd", "/c", "taskkill /F /IM QQ.exe"], capture_output=True,
-                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    proto.kill_qq()
     log.info("已结束 QQ 进程，准备重启")
 
 
@@ -139,8 +138,8 @@ async def main() -> None:
                 await asyncio.sleep(15)
                 continue
 
-            if not port_open(6099):
-                log.warning("NapCat 没在跑 → 拉起")
+            if not proto.is_up(ROOT):
+                log.warning("协议端 %s 没在跑 → 拉起", BACKEND)
                 start_napcat()
                 await asyncio.sleep(20)
                 continue
@@ -159,8 +158,29 @@ async def main() -> None:
                 continue
 
             down = time.time() - down_since
+
+            if BACKEND == "snowluma":
+                # SnowLuma 只能扫码登录：杀 QQ 得到的只是一个「未登录的新 QQ」，
+                # 恢复不了任何东西，反而每轮都把用户刚扫上的号又打掉。
+                # 所以这里只做两件事：保证协议端在、保证 QQ 窗口在，然后等人扫。
+                if down > 120 and not restart_tried:
+                    log.warning("掉线 %.0f 秒（SnowLuma 只能扫码，不自动重启 QQ）→ 请到 QQ 窗口扫码", down)
+                    if not proto.is_up(ROOT):
+                        start_napcat()
+                    proto.ensure_qq(ROOT)  # 没有 QQ 就把登录窗口叫出来
+                    restart_tried = True
+                    await asyncio.sleep(30)
+                    continue
+
+                if down > 900:
+                    log.warning("已掉线 %.0f 分钟，仍未扫码；下一轮继续等", down / 60)
+                    await recover_login()
+                    down_since = time.time() if not connected() else None
+                    restart_tried = False
+                continue
+
             if down > 180 and not restart_tried:
-                log.warning("掉线 %.0f 秒 → 重启 NapCat 试试", down)
+                log.warning("掉线 %.0f 秒 → 重启协议端 %s 试试", down, BACKEND)
                 kill_qq()
                 await asyncio.sleep(3)
                 start_napcat()

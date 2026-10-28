@@ -35,6 +35,12 @@ def _j(data: Any, status: int = 200) -> web.Response:
     )
 
 
+def _is_loopback(host: str) -> bool:
+    """host 是不是只听本机（127.0.0.1 / localhost / ::1）。"""
+    h = (host or "").strip().lower()
+    return h in ("127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1") or h.startswith("127.")
+
+
 class HttpApi:
     def __init__(self, bot: Any, cfg: dict | None = None) -> None:
         self.bot = bot
@@ -81,6 +87,7 @@ class HttpApi:
                 web.post("/admin/save", self.h_admin_save),
                 web.get("/admin/models", self.h_admin_models),
                 web.post("/admin/test", self.h_admin_test),
+                web.post("/admin/test_tts", self.h_admin_test_tts),
                 web.post("/admin/reload", self.h_admin_reload),
                 web.post("/admin/share", self.h_admin_share),
                 web.post("/admin/diary", self.h_admin_diary),
@@ -89,6 +96,7 @@ class HttpApi:
                 web.get("/admin/logs", self.h_admin_logs),
                 web.get("/admin/memory", self.h_admin_memory),
                 web.post("/admin/memory/clear", self.h_admin_memory_clear),
+                web.get("/admin/memory/export", self.h_admin_memory_export),
                 web.post("/admin/login", self.h_admin_login),
                 web.get("/admin/qr", self.h_admin_qr),
                 web.get("/admin/qr.png", self.h_admin_qr_png),
@@ -108,6 +116,16 @@ class HttpApi:
         )
         self._runner = web.AppRunner(app)
         await self._runner.setup()
+
+        # 交付保险：绑到非回环地址却没有 token，等于把「改配置 / 看聊天记录」的权限
+        # 开放给整个网络。这种情况一律退回只听本机，并大声记一条日志。
+        if not _is_loopback(self.host) and not self.token:
+            log.error(
+                "http_api.host=%s 但 token 为空 → 拒绝对外暴露，退回 127.0.0.1。"
+                "要公网访问请先设 http_api.token 为随机串。", self.host,
+            )
+            self.host = "127.0.0.1"
+
         site = web.TCPSite(self._runner, self.host, self.port)
         await site.start()
         import time as _t
@@ -421,58 +439,96 @@ class HttpApi:
 
     # ---------------- 协议端（SnowLuma / NapCat） ----------------
     def _protocol(self) -> dict:
-        """面板地址等信息，以 config.yaml 的 protocol 段为准。
+        """协议端面板信息：以 qqbot.proto 为准（config.yaml 的 protocol_backend）。
 
-        以前这里写死读 napcat/config/webui.json —— 换成 SnowLuma 之后就没有那个文件了，
-        所以改成配置驱动：kind 决定名字和二维码来源，webui 决定地址。
+        以前这里写死 napcat/config/webui.json 和 6099 —— 换成 SnowLuma 后都没了。
+        现在端口、地址、二维码来源统一由 qqbot/proto.py 回答，各处不用再各写一份。
         """
-        import json
-        from pathlib import Path as _P
         from urllib.parse import urlparse
 
-        cfg = {"kind": "snowluma", "webui": "http://127.0.0.1:5099", "webui_token": ""}
+        kind, url, token = "snowluma", "http://127.0.0.1:5099", ""
+        label = "SnowLuma"
         try:
-            from .config import load_config
+            from . import proto as _proto
 
-            sec = load_config("config.yaml").section("protocol") or {}
-            for k in ("kind", "webui", "webui_token"):
-                if sec.get(k) not in (None, ""):
-                    cfg[k] = str(sec[k])
-        except Exception as exc:
-            log.debug("读 protocol 配置失败：%r", exc)
+            kind = _proto.backend()
+            url = _proto.webui_url()
+            label = {"snowluma": "SnowLuma", "napcat": "NapCat"}.get(kind, kind or "协议端")
+            if kind == "napcat":
+                token = _proto.napcat_webui_token() or ""
+        except Exception as exc:  # proto 模块不在就退回老办法，别把面板搞挂
+            log.debug("proto 模块不可用，退回 protocol 段：%r", exc)
+            try:
+                from .config import load_config
 
-        kind, url, token = cfg["kind"], str(cfg["webui"]), str(cfg["webui_token"])
-
-        # 老装机（NapCat）：面板端口和密码写在 napcat/config/webui.json
-        if kind == "napcat":
-            for rel in ("napcat/config/webui.json", "napcat/webui.json"):
-                f = _P(rel)
-                if not f.exists():
-                    continue
-                try:
-                    data = json.loads(f.read_text(encoding="utf-8"))
-                except Exception:
-                    break
-                url = "http://127.0.0.1:%d" % int(data.get("port") or 6099)
-                token = str(data.get("token") or token)
-                break
+                sec = load_config("config.yaml").section("protocol") or {}
+                kind = str(sec.get("kind") or kind)
+                url = str(sec.get("webui") or url)
+                token = str(sec.get("webui_token") or "")
+                label = {"snowluma": "SnowLuma", "napcat": "NapCat"}.get(kind, kind or "协议端")
+            except Exception as exc2:
+                log.debug("读 protocol 配置也失败：%r", exc2)
 
         u = urlparse(url if "//" in url else "http://" + url)
         port = u.port or (443 if u.scheme == "https" else 80)
         webui = url.rstrip("/")
         if token and "token=" not in webui:
             webui = "%s/?token=%s" % (webui, token)
+
+        # 控制台是唯一入口：QQ 在不在、面板账号密码、登录该怎么做，一并在这一处答完，
+        # 让人不用再去 5099 翻日志找那个每次重启都会变的一次性密码。
+        qq_running, we_user, we_pass, hint = False, "", "", ""
+        try:
+            from . import proto as _proto
+
+            qq_running = _proto.qq_running()
+            we_user, we_pass = self._snowluma_webui_cred(kind)
+            hint = _proto.login_hint() if kind != "napcat" else ""
+        except Exception as exc:
+            log.debug("补协议端细节失败：%r", exc)
+
         return {
             "kind": kind,
-            "label": {"snowluma": "SnowLuma", "napcat": "NapCat"}.get(kind, kind or "协议端"),
+            "label": label,
             "url": url.rstrip("/"),
             "host": u.hostname or "127.0.0.1",
             "port": port,
             "token": token,
             "webui": webui,
-            # 只有 NapCat 会把二维码落到本地文件；SnowLuma 走面板/桌面扫码
+            # 只有 NapCat 会把二维码落到本地文件；SnowLuma 只能在它自己的窗口/面板里扫
             "has_qr": kind == "napcat",
+            "qq_running": qq_running,
+            "webui_user": we_user,
+            "webui_pass": we_pass,
+            "login_hint": hint,
         }
+
+    @staticmethod
+    def _snowluma_webui_cred(kind: str) -> tuple[str, str]:
+        """从 SnowLuma 的 stdout 日志里捞最近一次打印的 WebUI 初始账号密码。
+
+        SnowLuma 的 WebUI 密码只在启动时打印一次，且每次重启都会重新生成 ——
+        放在控制台里直接展示，省得用户去翻 logs/stdout.log。
+        """
+        if kind != "snowluma":
+            return "", ""
+        import re
+        from pathlib import Path
+
+        try:
+            from . import proto as _proto
+
+            home = Path(_proto.snowluma_home())
+        except Exception:
+            home = Path("E:/snowluma")
+        logf = home / "logs" / "stdout.log"
+        try:
+            raw = logf.read_bytes()
+        except OSError:
+            return "", ""
+        tail = raw[-200_000:].decode("utf-8", "replace")
+        hits = re.findall(r"initial credentials:\s*user=(\S+)\s+password=(\S+)", tail)
+        return hits[-1] if hits else ("", "")
 
     async def h_admin_napcat(self, request: web.Request) -> web.Response:
         """协议端面板地址 + 密码（配置台主页上要给用户看）。路由名保留 napcat 是为了兼容老调用。"""
@@ -788,13 +844,18 @@ class HttpApi:
 
         try:
             if not chat:
-                chats = []
+                # 一个 QQ 只占一行：各人格的条数挂在 personas 里，页面上折叠起来
+                groups: dict[str, dict] = {}
                 for pid, path in files:
                     mem = Memory(str(path))
                     for cid in mem.known_chats(limit=50):
-                        chats.append({"persona": pid, "chat": cid,
-                                      "count": mem.message_count(cid)})
-                chats.sort(key=lambda c: c["count"], reverse=True)
+                        c = mem.message_count(cid)
+                        g = groups.setdefault(cid, {"chat": cid, "count": 0, "personas": []})
+                        g["count"] += c
+                        g["personas"].append({"persona": pid, "count": c})
+                chats = sorted(groups.values(), key=lambda x: x["count"], reverse=True)
+                for g in chats:
+                    g["personas"].sort(key=lambda x: x["count"], reverse=True)
                 return _j({"ok": True, "chats": chats})
 
             target = files[0][1]
@@ -822,6 +883,37 @@ class HttpApi:
         except Exception as exc:
             return _j({"ok": False, "error": repr(exc)})
 
+    async def h_admin_memory_export(self, request: web.Request) -> web.Response:
+        """把记忆和人格一起打包下载（zip：人格设定 + 每个会话的记忆库 + 成长档案）。"""
+        self._auth(request)
+        import datetime as _dt
+        import io as _io
+        import zipfile
+        from pathlib import Path as _Path
+
+        base = _Path("data")
+        buf = _io.BytesIO()
+        try:
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                for p in (base / "personas.yaml", base / "memory_router.db"):
+                    if p.exists():
+                        z.write(p, str(p.relative_to(base.parent)))
+                for sub in ("personas", "growth"):
+                    d = base / sub
+                    if not d.exists():
+                        continue
+                    for f in d.rglob("*"):
+                        if f.is_file():
+                            z.write(f, str(f.relative_to(base.parent)))
+        except Exception as exc:
+            return _j({"ok": False, "error": repr(exc)})
+        name = "memory-%s.zip" % _dt.datetime.now().strftime("%Y%m%d-%H%M")
+        return web.Response(
+            body=buf.getvalue(),
+            content_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="%s"' % name},
+        )
+
     async def h_admin_memory_clear(self, request: web.Request) -> web.Response:
         """清空某段记忆：{"persona": "xiaoyou", "chat": "u123"}"""
         self._auth(request)
@@ -833,6 +925,7 @@ class HttpApi:
         if not chat:
             return _j({"ok": False, "error": "chat 必填"})
         files = self._memory_files()
+        done: list[str] = []
         for pid, path in files:
             if persona and pid != persona:
                 continue
@@ -840,10 +933,14 @@ class HttpApi:
                 mem = Memory(str(path))
                 if mem.message_count(chat) > 0:
                     mem.forget(chat)
-                    return _j({"ok": True, "persona": pid, "chat": chat})
+                    done.append(pid)
+                    if persona:
+                        break
             except Exception as exc:
                 return _j({"ok": False, "error": repr(exc)})
-        return _j({"ok": False, "error": f"没找到 {chat} 的记忆"})
+        if not done:
+            return _j({"ok": False, "error": f"没找到 {chat} 的记忆"})
+        return _j({"ok": True, "chat": chat, "personas": done})
 
     # ---------------------------------------------------------------- 动作按钮
     # 桌面面板删掉之后，扫码登录 / 掉线自愈 / 重启 / 备份 都收到网页配置台上。
@@ -917,15 +1014,18 @@ setInterval(async()=>{
 </script></body></html>"""
 
     async def h_admin_login(self, request: web.Request) -> web.Response:
-        """扫码登录：SnowLuma 走它自己的面板；NapCat 在 Windows 上拉起桌面窗口。"""
+        """扫码登录：SnowLuma 走它自己的窗口/面板；NapCat 在 Windows 上拉起桌面窗口。"""
         self._auth(request)
         proto = self._protocol()
         if proto["kind"] != "napcat":
-            return _j({
-                "ok": True,
-                "url": proto["webui"],
-                "hint": f"打开 {proto['label']} 面板，在里面用手机 QQ 扫码登录",
-            })
+            hint = f"在 {proto['label']} 面板里扫码登录"
+            try:
+                from . import proto as _proto
+
+                hint = _proto.login_hint() or hint
+            except Exception:
+                pass
+            return _j({"ok": True, "url": proto["webui"], "hint": hint})
         if os.name != "nt":
             return _j({"ok": True, "url": f"/admin/qr?token={self.token}",
                        "hint": "已打开二维码页面，用手机 QQ 扫一下"})
@@ -933,10 +1033,33 @@ setInterval(async()=>{
         return _j({"ok": ok, "hint": "扫码窗口已弹出，用手机 QQ 扫一下" if ok else "没找到 login_qr.py"})
 
     async def h_admin_qr(self, request: web.Request) -> web.Response:
-        """手机可直接打开的扫码登录页。"""
+        """手机可直接打开的扫码登录页（只有 NapCat 会把码落成本地图片）。"""
         self._auth(request)
+        proto = self._protocol()
+        if proto["kind"] != "napcat" or not proto["has_qr"]:
+            # SnowLuma 的二维码在 QQ 自己的窗口里，网页给不出码 —— 别让用户对着空白页等。
+            hint = proto.get("login_hint") or "打开 QQ 窗口扫码登录"
+            html = (
+                "<!doctype html><html lang='zh'><meta charset='utf-8'>"
+                "<body style=\"font-family:-apple-system,'Microsoft YaHei',sans-serif;"
+                "max-width:640px;margin:12vh auto;padding:0 24px;line-height:1.7;color:#12211d\">"
+                f"<h2 style='margin:0 0 12px'>{proto['label']} 没有网页二维码</h2>"
+                f"<p style='color:#5d716c'>{hint}</p>"
+                f"<p>协议端面板：<a href='{proto['webui']}' target='_blank' rel='noreferrer'>{proto['webui']}</a></p>"
+                "<p style='color:#8b9d98;font-size:13px'>想回控制台：<a href='/admin'>/admin</a></p>"
+                "</body></html>"
+            )
+            return web.Response(text=html, content_type="text/html", charset="utf-8")
         return web.Response(text=self.LOGIN_HTML.replace("__TOKEN__", self.token),
                             content_type="text/html")
+
+    async def h_admin_test_tts(self, request: web.Request) -> web.Response:
+        self._auth(request)
+        from .admin import test_tts
+
+        data = await self._body(request)
+        autoreply = data.get("autoreply") or self._raw().get("autoreply") or {}
+        return _j(await test_tts(autoreply))
 
     async def h_admin_qr_png(self, request: web.Request) -> web.Response:
         """登录二维码（只有 NapCat 会把码落到本地文件；SnowLuma 走面板/桌面扫码）。"""

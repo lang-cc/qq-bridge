@@ -1,0 +1,41 @@
+{
+  "networks": {
+    "httpServers": [
+      {
+        "name": "local-actions",
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 3000,
+        "path": "/",
+        "accessToken": "localtoken",
+        "messageFormat": "array",
+        "reportSelfMessage": false
+      }
+    ],
+    "httpClients": [],
+    "wsServers": [
+      {
+        "name": "ws-local",
+        "enabled": false,
+        "host": "127.0.0.1",
+        "port": 3001,
+        "path": "/",
+        "role": "Universal",
+        "accessToken": "localtoken",
+        "messageFormat": "array",
+        "reportSelfMessage": false
+      }
+    ],
+    "wsClients": [
+      {
+        "name": "qq-bridge",
+        "enabled": true,
+        "url": "ws://127.0.0.1:8199/onebot/v11/ws",
+        "role": "Universal",
+        "accessToken": "",
+        "reconnectIntervalMs": 5000
+      }
+    ]
+  },
+  "musicSignUrl": ""
+}

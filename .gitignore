@@ -52,3 +52,14 @@ dist/
 # 框架运行配置（含 token）
 nb.env
 backups/
+
+# 本地备份 / 临时脚本 / 打包产物
+*.bak-*
+_stage3/
+*.zip
+
+# 运行时数据（记忆、成长档案、掉线记录、声线 id）
+data/conn.json
+data/growth/
+data/voice/
+data/sticker_trash/

@@ -1,5 +1,7 @@
 # 复制成 config.yaml 再填。含密钥，别提交到仓库
 adapter: onebot11
+# 协议端后端：napcat | snowluma（差异见 qqbot/proto.py）
+protocol_backend: napcat
 log_level: INFO
 onebot11:
   mode: reverse_ws
@@ -16,6 +18,15 @@ onebot11:
     base_url: http://127.0.0.1:3000
 http_api:
   enabled: true
+  # 控制台/发送接口（网页配置台就是 http://<host>:<port>/admin ）
+  # 本地交付：保持 127.0.0.1，双击桌面图标即可打开，外网碰不到。
+  # 服务器交付：二选一
+  #   ① 推荐：保持 127.0.0.1，本地开隧道看
+  #        python tools/console_tunnel.py --host <服务器IP> --user root --open
+  #        然后打开 http://127.0.0.1:18088/admin
+  #   ② 真要公网直接访问：host 改 0.0.0.0，并且 token 必须设成随机串，
+  #      否则等于把改配置、看聊天记录的权限开放给全互联网。
+  #        打开 http://<服务器IP>:8088/admin?token=<token>
   host: 127.0.0.1
   port: 8088
   token: ''
@@ -41,7 +52,7 @@ autoreply:
   human:
     # 把模型的「作文」压成人话：去客服腔、去旁白、砍长句、限段数
     enabled: true
-    max_chars: 26
+    max_chars: 34
     max_segments: 2
   llm:
     enabled: true
@@ -68,7 +79,7 @@ autoreply:
     enabled: true
     db: data/memory.db
     history: 100
-    reflect_every: 12
+    reflect_every: 5
     # 一次复盘读多少条对话（越多学得越全，长文本会自动分块）
     reflect_history: 500
     root: data

@@ -1,4 +1,4 @@
-"""一键启动：机器人服务 + NapCat；掉登录时自动弹二维码等扫码。
+"""一键启动：机器人服务 + 协议端（NapCat / SnowLuma）；掉登录时走各自的登录流程。
 
 命令行 / 开机自启用它；桌面图标不再走这里（图标直接开网页配置台）。
 用 pythonw 跑时没有控制台，所有输出写 logs/boot.log。
@@ -52,19 +52,20 @@ def start_service() -> None:
     log.info("服务启动中…")
 
 
-def start_napcat() -> None:
-    if port_open(6099):
-        log.info("NapCat 已在运行")
-        return
-    bat = ROOT / "napcat" / "launcher-user-silent.bat"
-    if bat.exists():
-        from qqbot.account import bot_account, napcat_launch_args
+def start_proto() -> None:
+    """拉起协议端：NapCat 还是 SnowLuma 由 qqbot.proto 决定。"""
+    from qqbot import proto
+    from qqbot.account import bot_account
 
-        account = bot_account(ROOT)
-        cmd = ["cmd", "/c", str(bat), *napcat_launch_args(account)]
-        subprocess.Popen(cmd, cwd=str(ROOT / "napcat"),
-                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        log.info("NapCat 启动中…（账号 %s）", account or "未指定")
+    name = proto.backend(ROOT)
+    if proto.is_up(ROOT, name):
+        log.info("%s 已在运行", name)
+        return
+    account = bot_account(ROOT)
+    if proto.start(ROOT, account):
+        log.info("%s 启动中…（账号 %s）", name, account or "未指定")
+    else:
+        log.error("%s 启动失败，检查目录是否完整", name)
 
 
 def ensure_watchdog() -> None:
@@ -83,7 +84,7 @@ def ensure_watchdog() -> None:
 
 async def main() -> int:
     start_service()
-    start_napcat()
+    start_proto()
 
     for i in range(20):
         time.sleep(3)
@@ -92,12 +93,14 @@ async def main() -> int:
             ensure_watchdog()
             return 0
 
-    log.warning("60 秒内没连上，判定掉登录 → 弹二维码")
+    from qqbot import proto
+
+    log.warning("60 秒内没连上，判定掉登录 → %s", "等扫码" if proto.backend(ROOT) == "snowluma" else "弹二维码")
     try:
         import login_qr
 
         if not login_qr.start_napcat():
-            log.error("NapCat 起不来")
+            log.error("%s 起不来", proto.backend(ROOT))
             return 1
         ok = await login_qr.drive_login()
         if ok:

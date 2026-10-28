@@ -90,13 +90,17 @@ async def synth(text: str, voice: str = "zh-CN-XiaoyiNeural", rate: str = "+0%",
     return str(dest)
 
 
-async def aliyun_synth(text: str, api_key: str, voice: str = "Cherry", model: str = "qwen3-tts-flash") -> str | None:
+async def aliyun_synth(text: str, api_key: str, voice: str = "Cherry", model: str = "qwen3-tts-flash",
+                       base_url: str = "") -> str | None:
     """阿里云百炼语音合成，国内直连、音质接近真人。
 
     两套接口按模型分流：
       - qwen3-tts-*                → aigc/multimodal-generation（{model, input{text,voice}}）
       - cosyvoice-* / qwen-audio-* → audio/tts/SpeechSynthesizer（含 format/sample_rate）
     复刻出来的音色（cosyvoice-v3.5-plus-xxx）走后者。
+
+    base_url 留空就用官方 dashscope 地址；走代理/自建网关时填根地址，
+    或者直接填到具体的 .../SpeechSynthesizer 也行。
     """
     import aiohttp
 
@@ -106,13 +110,16 @@ async def aliyun_synth(text: str, api_key: str, voice: str = "Cherry", model: st
     text = text[:600]  # 接口上限 600 字
     out_dir = Path("tmp")
     out_dir.mkdir(exist_ok=True)
+    host = (base_url or "").strip().rstrip("/") or "https://dashscope.aliyuncs.com"
     legacy = model.startswith(("cosyvoice", "qwen-audio"))
+    legacy_path = "/api/v1/services/audio/tts/SpeechSynthesizer"
+    new_path = "/api/v1/services/aigc/multimodal-generation/generation"
     if legacy:
-        url = "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer"
+        url = host if host.endswith("/SpeechSynthesizer") else host + legacy_path
         payload = {"model": model,
                    "input": {"text": text, "voice": voice, "format": "wav", "sample_rate": 24000}}
     else:
-        url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+        url = host if host.endswith("/generation") else host + new_path
         payload = {"model": model,
                    "input": {"text": text, "voice": voice, "language_type": "Chinese"}}
     headers = {
@@ -253,6 +260,7 @@ async def speak(text: str, voice: str = "zh-CN-XiaoyiNeural", cfg: dict | None =
             api_key,
             voice=str(cfg.get("voice") or "Cherry"),
             model=str(cfg.get("model") or "qwen3-tts-flash"),
+            base_url=str(cfg.get("base_url") or ""),
         )
         if mp3:
             log.info("语音走阿里云（%s）", cfg.get("voice") or "Cherry")

@@ -160,6 +160,7 @@ PAGE = r"""<!doctype html>
   .btn.ghost:hover{background:var(--surface-2);border-color:#b9cdc8}
   .btn.danger{background:#fdecec;border-color:rgba(224,75,75,.3);color:#c23a3a;box-shadow:none}
   .btn.danger:hover{background:#fbdede}
+  .btn.danger.armed{background:var(--danger);border-color:var(--danger);color:#fff}
   .btn:disabled{opacity:.5;cursor:not-allowed}
   .btn.sm{padding:8px 12px;font-size:12.5px}
 
@@ -191,9 +192,24 @@ PAGE = r"""<!doctype html>
   .hrow.bad em{color:var(--danger)}
   .hrow .tip{display:none}
 
+  /* 白名单 */
+  .wl{display:flex;flex-wrap:wrap;gap:8px;margin:2px 0 0}
+  .wl-item{display:inline-flex;align-items:center;gap:2px;padding:5px 5px 5px 12px;
+    border-radius:999px;background:var(--surface-2);border:1px solid var(--line)}
+  .wl-item i{font-style:normal;font-size:12.5px;color:var(--fg);
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .wl-item button{border:0;background:transparent;color:var(--dim-2);font-size:15px;line-height:1;
+    padding:2px 8px;border-radius:50%;cursor:pointer}
+  .wl-item button:hover{background:#fdecec;color:var(--danger)}
+  .wl-add{display:flex;gap:8px;margin-top:10px;max-width:430px}
+  .wl-add input{flex:1}
+
   /* 记忆 */
   .mem{display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px}
   @media (max-width:860px){.mem{grid-template-columns:1fr}}
+  .mem-sub{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:2px 0 2px 14px;padding:6px 10px;border-radius:10px;font-size:12.5px;color:var(--dim);cursor:pointer;border-left:2px solid var(--line)}
+  .mem-sub:hover{background:var(--surface-2)}
+  .mem-sub.active{background:var(--surface-2);color:var(--text);border-left-color:var(--accent)}
   .mem-list{background:var(--surface-2);border:1px solid var(--line);border-radius:14px;padding:6px;
     max-height:520px;overflow:auto}
   .mem-item{padding:9px 11px;border-radius:10px;cursor:pointer;font-size:12.5px;color:var(--dim);
@@ -257,6 +273,7 @@ PAGE = r"""<!doctype html>
     backdrop-filter:blur(14px);box-shadow:0 -8px 24px -18px rgba(16,40,35,.4);
   }
   .savebar.show{display:flex}
+  @media (min-width:901px){.savebar{left:var(--side)}}
   .savebar .inner{max-width:1080px;margin:0 auto;display:flex;gap:12px;align-items:center;width:100%}
   .savebar .status{font-size:12.5px;color:var(--dim);font-weight:600}
 
@@ -284,6 +301,30 @@ PAGE = r"""<!doctype html>
     .content{padding:16px 16px 120px}
     .savebar{padding:12px 16px}
   }
+  /* ---------- 对齐修整：统一基线，别让卡片里各元素参差 ---------- */
+  /* 1) 按钮文字默认靠左，放在 g4 网格里会像输入框 —— 一律居中 */
+  .btn{justify-content:center}
+  /* 1b) 行内「保存」有改动时描一圈，看得见还没存 */
+  .savebtn.dirty{box-shadow:0 0 0 3px rgba(46,164,120,.22)}
+  /* 2) 顶栏胶囊和按钮等高，右边缘才在一条线上 */
+  .tb-r .pill,.tb-r .btn{height:32px;padding-top:0;padding-bottom:0}
+  .tb-r .pill{padding-left:12px;padding-right:12px}
+  /* 3) 内容区铺满，宽屏下右侧不留大片空白 */
+  .content{max-width:none}
+  .savebar .inner{max-width:none}
+  /* 4) 白名单输入行不要太长，添加按钮紧贴输入框 */
+  .wl-add{max-width:640px}
+  .wl-add .btn{flex:0 0 auto;min-width:96px}
+  /* 5) 用量胶囊按 3 列排，6 项正好两行，不会孤零零吊一个 */
+  .chips.usage{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}
+  @media (max-width:860px){.chips.usage{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:520px){.chips.usage{grid-template-columns:1fr}}
+  .chips.usage .chip{text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 6) 网格里的按钮撑满格子，四块等高等宽 */
+  .grid > .btn{align-self:stretch;padding-top:12px;padding-bottom:12px}
+  /* 7) 「服务在线」固定 4 列：8 项正好 4 上 4 下，宽屏也不会变成 5+3 */  .hlist{grid-template-columns:repeat(4,minmax(0,1fr))}
+  @media (max-width:1500px){.hlist{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:860px){.hlist{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -324,7 +365,7 @@ PAGE = r"""<!doctype html>
 
     <div class="side-foot">
       <div class="t">Ctrl + S 保存</div>
-      <div class="d">配置改动后点右下角「保存并生效」，不用重启。</div>
+      <div class="d">改完点卡片右上角的「保存」，立即生效，不用重启。</div>
     </div>
   </aside>
 
@@ -338,7 +379,7 @@ PAGE = r"""<!doctype html>
       <div class="tb-r">
         <span class="pill" id="pill-conn"><span class="dot"></span><span id="pill-txt">连接中…</span></span>
         <span class="pill" id="pill-acct">账号 —</span>
-        <a class="btn ghost sm" id="napcat-link" href="http://127.0.0.1:6099" target="_blank" rel="noreferrer">NapCat 面板</a>
+        <a class="btn ghost sm" id="napcat-link" href="http://127.0.0.1:5099" target="_blank" rel="noreferrer">协议端面板</a>
         <button class="btn ghost sm" onclick="act('/admin/login','扫码登录')">扫码登录</button>
         <button class="btn ghost sm" onclick="act('/admin/restart','重启服务')">重启</button>
       </div>
@@ -352,14 +393,15 @@ PAGE = r"""<!doctype html>
       <div class="card-h">
         <div>
           <h2 style="color:#c23a3a">还没登录 QQ</h2>
-          <p>用手机 QQ 扫下面这张码；扫完这一页自己会变绿，不用刷新。</p>
+          <p id="needlogin-hint">用手机 QQ 扫码登录；登录成功后这一页自己会变绿，不用刷新。</p>
         </div>
       </div>
       <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
-        <img id="loginqr" alt="登录二维码" style="width:186px;height:186px;object-fit:contain;background:#fff;border-radius:12px;padding:8px;border:1px solid var(--line)">
+        <img id="loginqr" alt="登录二维码" style="display:none;width:186px;height:186px;object-fit:contain;background:#fff;border-radius:12px;padding:8px;border:1px solid var(--line)">
         <div style="display:flex;flex-direction:column;gap:10px;min-width:180px">
-          <button class="btn ghost" onclick="refreshQR(this)">换一张二维码</button>
-          <span id="loginstat" style="font-size:13px;color:var(--dim)">等待扫码…</span>
+          <a class="btn" id="login-open" href="http://127.0.0.1:5099" target="_blank" rel="noreferrer">打开面板扫码</a>
+          <button class="btn ghost" id="login-refresh" onclick="refreshQR(this)" style="display:none">换一张二维码</button>
+          <span id="loginstat" style="font-size:13px;color:var(--dim)">等待登录…</span>
         </div>
       </div>
     </div>
@@ -392,41 +434,63 @@ PAGE = r"""<!doctype html>
         <button class="btn ghost" onclick="act('/admin/restart','重启服务')">重启服务</button>
         <button class="btn ghost" onclick="act('/admin/backup','保存备份')">保存备份</button>
       </div>
-      <pre class="out" id="actout" style="margin-top:14px">（扫码登录：弹出二维码窗口 · 掉线自愈：掉了自动重连 · 备份存到 安装目录/backups/）</pre>
+      <div class="hint" id="actout" style="margin-top:14px;white-space:pre-wrap">扫码登录 = 到协议端面板扫码 · 掉线自愈 = 掉了自动重连 · 保存备份 = 存到 backups/</div>
     </div>
 
     <div class="card">
       <div class="card-h">
-        <div><h2>NapCat 面板</h2>
-          <p>扫码登录、看 QQ 在不在线、改连接配置都在这里。手机 QQ 扫面板里的二维码即可。</p></div>
-        <div class="right"><a class="btn ghost sm" id="napcat-open" href="http://127.0.0.1:6099"
-             target="_blank" rel="noreferrer">打开面板</a></div>
+        <div><h2 id="proto-title">协议端面板</h2>
+          <p id="proto-desc">扫码登录、看 QQ 在不在线、改连接配置都在协议端自己的面板里。</p></div>
+        <div class="right">
+          <button class="btn ghost sm" onclick="copyNapcat()">复制密码</button>
+          <a class="btn ghost sm" id="napcat-open" href="http://127.0.0.1:5099"
+             target="_blank" rel="noreferrer">打开面板</a>
+        </div>
       </div>
       <div class="grid g2">
         <label class="f"><span>面板地址</span>
-          <input type="text" id="napcat-url" readonly onclick="this.select()"></label>
-        <label class="f"><span>面板密码（token）</span>
-          <div style="display:flex;gap:8px">
-            <input type="text" id="napcat-token" readonly onclick="this.select()" style="flex:1">
-            <button class="btn ghost sm" onclick="copyNapcat()">复制</button>
-          </div>
-          <small>打开面板时如果提示登录，把这个密码填进去</small></label>
+          <input type="text" id="napcat-url" readonly onclick="this.select()">
+          <small>端口跟 protocol_backend 走：napcat→6099，snowluma→5099</small></label>
+        <label class="f"><span>面板密码</span>
+          <input type="text" id="napcat-token" readonly onclick="this.select()">
+          <small id="proto-token-tip">打开面板时如果提示登录，把这个填进去</small></label>
+      </div>
+      <div class="hint" style="margin-top:12px">
+        协议端在哪配的：<code>config.yaml → protocol_backend</code>（<code>napcat</code> 或 <code>snowluma</code>，
+        端口差异见 <code>qqbot/proto.py</code>）。跟机器人之间的连接不变，还是 OneBot v11 反向 WS → <code>127.0.0.1:8199</code>。
       </div>
     </div>
 
     <div class="card">
-      <div class="card-h"><div><h2>白名单</h2><p>只有名单里的人，它才会回话。</p></div></div>
-      <div class="block-title">私聊</div>
-      <div class="chips" id="wl-users"><span class="chip">—</span></div>
-      <div class="block-title">群</div>
-      <div class="chips" id="wl-groups"><span class="chip">—</span></div>
+      <div class="card-h">
+        <div><h2>白名单</h2><p>只有名单里的人，它才会回话。加/删立即生效，不用重启。</p></div>
+        <div class="right"><span class="chip" id="wl-state">—</span></div>
+      </div>
+
+      <div class="block-title">私聊（QQ 号）</div>
+      <div class="wl" id="wl-users"><span class="hint">（还没有）</span></div>
+      <div class="wl-add">
+        <input type="text" id="wl-user-in" inputmode="numeric" placeholder="输入 QQ 号，回车就加">
+        <button class="btn sm" onclick="wlAdd('users')">添加</button>
+      </div>
+
+      <div class="block-title">群（群号）</div>
+      <div class="wl" id="wl-groups"><span class="hint">（还没有）</span></div>
+      <div class="wl-add">
+        <input type="text" id="wl-group-in" inputmode="numeric" placeholder="输入群号，回车就加">
+        <button class="btn sm" onclick="wlAdd('groups')">添加</button>
+      </div>
+      <div class="hint" style="margin-top:14px">
+        名单只认号码本体；点号码右边的 × 就是删掉。写进 config.yaml 的 <code>autoreply.whitelist</code>，
+        注释和排版不会被覆盖。
+      </div>
     </div>
 
     <div class="card">
       <div class="card-h"><div><h2>最近用量</h2><p>今天调用了多少次模型。</p></div>
         <div class="right"><button class="btn ghost sm" onclick="loadUsage()">刷新</button></div>
       </div>
-      <div class="chips" id="usage"><span class="chip">—</span></div>
+      <div class="chips usage" id="usage"><span class="chip">—</span></div>
     </div>
   </section>
 
@@ -435,7 +499,11 @@ PAGE = r"""<!doctype html>
     <div class="card">
       <div class="card-h">
         <div><h2>接口</h2><p>像不像真人主要看人格；这三项决定它能不能说话。</p></div>
-        <div class="right"><button class="btn ghost sm" onclick="loadModels()">拉取可用模型</button></div>
+        <div class="right">
+          <button class="btn ghost sm" onclick="loadModels()">拉取可用模型</button>
+          <button class="btn ghost sm" onclick="testLLM(this)">测试</button>
+          <button class="btn sm savebtn" onclick="save(this)">保存</button>
+        </div>
       </div>
       <div class="grid g2">
         <label class="f"><span>接口地址 base_url</span>
@@ -444,25 +512,53 @@ PAGE = r"""<!doctype html>
           <input type="password" id="api_key" placeholder="sk-…" autocomplete="off">
           <small><a href="javascript:void(0)" onclick="peekKey()">显示 / 隐藏</a></small></label>
       </div>
-      <div class="grid g3" style="margin-top:14px">
+      <div style="margin-top:14px">
         <label class="f"><span>模型名</span>
-          <input type="text" id="model" list="models" placeholder="deepseek-chat">
-          <datalist id="models"></datalist></label>
-        <label class="f"><span>温度 <em id="tempv" style="color:var(--acc-ink);font-style:normal">0.95</em></span>
-          <input type="number" id="temperature" step="0.05" min="0" max="2" oninput="$('tempv').textContent=this.value"></label>
-        <label class="f"><span>记忆轮数</span>
-          <input type="number" id="history" min="0" max="30">
-          <small>带多少条上下文，越大越贵</small></label>
+          <select id="model" onchange="markDirty()"><option value="">点右上「拉取可用模型」</option></select>
+          <small id="modelhint">列表来自接口的 /models；想填列表外的模型名，直接改 config.yaml</small></label>
       </div>
       <div class="chips" id="modelchips" style="margin-top:12px"></div>
+      <pre class="out" id="llmtest" style="display:none;margin-top:14px"></pre>
+      <div class="hint" style="margin-top:14px">
+        要不要她说话、打字机快慢这些不在这儿：改 config.yaml 里的
+        <code>autoreply.llm.enabled</code>（总开关）和 <code>autoreply.typing</code>（每字多少毫秒）。
+      </div>
     </div>
 
     <div class="card">
-      <div class="card-h"><div><h2>回复开关</h2><p>关掉 AI 回复，她就只当哑巴（指令插件还能用）。</p></div></div>
-      <div class="grid g2">
-        <label class="switch"><span>启用 AI 回复</span><input type="checkbox" id="llm_enabled"></label>
-        <label class="switch"><span>模拟打字（打字机效果）</span><input type="checkbox" id="typing_enabled"></label>
+      <div class="card-h">
+        <div><h2>语音合成</h2><p>想让她发语音才填；全留空就只发文字。</p></div>
+        <div class="right">
+          <span class="chip" id="ttsstate">未配置</span>
+          <button class="btn ghost sm" onclick="testTTS(this)">测试</button>
+          <button class="btn sm savebtn" onclick="save(this)">保存</button>
+        </div>
       </div>
+      <div class="grid g3">
+        <label class="f"><span>提供方</span>
+          <select id="tts_provider" onchange="markDirty()">
+            <option value="">（不用语音，留空）</option>
+            <option value="aliyun">阿里云 DashScope</option>
+            <option value="edge">Edge TTS（免费，不用 key）</option>
+            <option value="volc">火山引擎</option>
+            <option value="baidu">百度（免费）</option>
+            <option value="sapi">本机离线</option>
+          </select></label>
+        <label class="f"><span>语音模型</span>
+          <input type="text" id="tts_model" placeholder="cosyvoice-v3.5-plus / qwen3-tts-flash" oninput="markDirty()">
+          <small>edge / baidu / 本机不用填</small></label>
+        <label class="f"><span>音色 ID</span>
+          <input type="text" id="tts_voice" placeholder="cosyvoice-v3.5-plus-xxxx 或 zh-CN-XiaoyiNeural" oninput="markDirty()"></label>
+      </div>
+      <div class="grid g2" style="margin-top:14px">
+        <label class="f"><span>API Key</span>
+          <input type="password" id="tts_api_key" placeholder="sk-…（阿里云必填，edge/百度/本机不用）" autocomplete="off" oninput="markDirty()">
+          <small><a href="javascript:void(0)" onclick="peekTTSKey()">显示 / 隐藏</a>　火山引擎的话在 config.yaml 里填 appid / token</small></label>
+        <label class="f"><span>接口地址</span>
+          <input type="text" id="tts_base_url" placeholder="留空 = 官方地址（阿里云 dashscope）" oninput="markDirty()">
+          <small>只在自建 / 代理语音接口时填，填到根地址就行</small></label>
+      </div>
+      <pre class="out" id="ttstest" style="display:none;margin-top:14px"></pre>
     </div>
   </section>
 
@@ -471,19 +567,87 @@ PAGE = r"""<!doctype html>
     <div class="card">
       <div class="card-h">
         <div><h2>人格</h2><p>她是谁、怎么说话、和你什么关系 —— 这一段最重要，写得越像真人越好。</p></div>
-        <div class="right"><span class="chip" id="pcount">0 字</span></div>
+        <div class="right">
+          <span class="chip" id="pcount">0 字</span>
+          <button class="btn danger sm" id="pclear" onclick="clearPersona(this)">清空</button>
+          <button class="btn sm savebtn" onclick="save(this)">保存</button>
+        </div>
       </div>
       <label class="f"><textarea id="persona" placeholder="你是…"
         oninput="document.getElementById('pcount').textContent=this.value.length+' 字'"></textarea></label>
       <div class="hint" style="margin-top:10px">
         只改这段文字 = 改「当前人格」的说法。一个 QQ 号固定一个人格，第一次聊天时自动绑定，之后不能换；
         QQ 里发 <b>人格</b> 可以看她是谁，<b>记忆</b> 看她记得你什么，<b>忘记我</b> 清空当前会话。
+        <br>「清空」只清这段文字：<b>人格、记忆、绑定关系都不动</b>（记忆在 <code>data/personas/&lt;人格&gt;/memory.db</code>，
+        只有「记忆」页的<b>清空这段</b>才会删），清完要再点一次<b>保存</b>才生效。切人格同理 —— 换回去记忆还在。
       </div>
     </div>
   </section>
 
   <!-- ============ 功能 ============ -->
   <section class="tab" id="tab-plug">
+    <div class="card">
+      <div class="card-h">
+        <div><h2>节奏</h2>
+          <p>回话快慢、多久不回、群里多安静。改完点保存，立即生效，不用重启。</p></div>
+        <div class="right"><button class="btn sm savebtn" onclick="save(this)">保存</button></div>
+      </div>
+      <div class="grid g4">
+        <label class="f"><span>最快回（秒）</span>
+          <input type="number" id="rd_min" min="0" max="100" step="1" oninput="markDirty()"><small>再快也别秒回</small></label>
+        <label class="f"><span>最慢回（秒）</span>
+          <input type="number" id="rd_max" min="0" max="100" step="1" oninput="markDirty()"><small>深夜会按作息再乘几倍</small></label>
+        <label class="f"><span>平时不回（%）</span>
+          <input type="number" id="ig_chance" min="0" max="100" step="1" oninput="markDirty()"><small>已读不回的概率</small></label>
+        <label class="f"><span>惹生气后不回（%）</span>
+          <input type="number" id="ig_angry" min="0" max="100" step="1" oninput="markDirty()"><small>被凶之后基本不理你</small></label>
+        <label class="f"><span>群里回话（%）</span>
+          <input type="number" id="gprob" min="0" max="100" step="5" oninput="markDirty()"><small>群里没 @ 也说话的概率</small></label>
+        <label class="f"><span>只说半句（%）</span>
+          <input type="number" id="hl_short" min="0" max="100" step="1" oninput="markDirty()"><small>只留前半句</small></label>
+        <label class="f"><span>话说一半（%）</span>
+          <input type="number" id="hl_half" min="0" max="100" step="1" oninput="markDirty()"><small>「因为你这个…算了」</small></label>
+        <label class="f"><span>拆两条发（%）</span>
+          <input type="number" id="hl_burst" min="0" max="100" step="1" oninput="markDirty()"><small>说完停一下再补一句</small></label>
+        <label class="f"><span>多久算断线（秒）</span>
+          <input type="number" id="cu_gap" min="0" max="3600" step="10" oninput="markDirty()"><small>低于这个不触发掉线补偿</small></label>
+        <label class="f"><span>自己上网间隔（小时）</span>
+          <input type="number" id="wd_hours" min="1" max="48" step="1" oninput="markDirty()"><small>多久自己刷一次热梗</small></label>
+        <label class="f"><span>每多少条复盘</span>
+          <input type="number" id="mem_reflect" min="0" max="200" step="1" oninput="markDirty()"><small>记进长期记忆的频率</small></label>
+        <label class="f"><span>普通记忆留几天</span>
+          <input type="number" id="mem_retain" min="1" max="3650" step="1" oninput="markDirty()"><small>重要原话永久留着</small></label>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h">
+        <div><h2>时间</h2>
+          <p>记多久、几点写日记、几点别出声 —— 改完点保存。</p></div>
+        <div class="right"><button class="btn sm savebtn" onclick="save(this)">保存</button></div>
+      </div>
+      <div class="grid g4">
+        <label class="f"><span>记仇多久（小时）</span>
+          <input type="number" id="grudge_hours" min="0" max="100" step="1" oninput="markDirty()"><small>过了就忘</small></label>
+        <label class="f"><span>写日记时间（点）</span>
+          <input type="number" id="diary_hour" min="0" max="100" step="1" oninput="markDirty()"><small>0-23，睡前那会儿</small></label>
+        <label class="f"><span>免打扰开始（点）</span>
+          <input type="number" id="quiet_start" min="0" max="23" step="1" oninput="markDirty()"><small>自己不开聊</small></label>
+        <label class="f"><span>免打扰结束（点）</span>
+          <input type="number" id="quiet_end" min="0" max="23" step="1" oninput="markDirty()"><small>自己不开聊</small></label>
+        <label class="f"><span>主动开聊最短（分钟）</span>
+          <input type="number" id="pmin" min="5" max="1440" step="5" oninput="markDirty()"><small>多久至少找你一次</small></label>
+        <label class="f"><span>主动开聊最长（分钟）</span>
+          <input type="number" id="pmax" min="5" max="2880" step="5" oninput="markDirty()"><small>最久多久没找你</small></label>
+        <label class="f"><span>每天最多主动（次）</span>
+          <input type="number" id="pmaxday" min="0" max="50" step="1" oninput="markDirty()"><small>别烦人</small></label>
+        <label class="f"><span>表情包概率（%）</span>
+          <input type="number" id="sticker_pct" min="0" max="100" step="1" oninput="markDirty()"><small>短句会加码</small></label>
+        <label class="f"><span>打错字概率（%）</span>
+          <input type="number" id="typo_pct" min="0" max="100" step="1" oninput="markDirty()"><small>手滑</small></label>
+        <label class="f"><span>看完过会儿再回（%）</span>
+          <input type="number" id="read_delay_pct" min="0" max="100" step="1" oninput="markDirty()"><small>已读不回一阵</small></label>
+      </div>
+    </div>
     <div class="card">
       <div class="card-h">
         <div><h2>功能</h2>
@@ -502,8 +666,16 @@ PAGE = r"""<!doctype html>
         <div><h2>它记得什么</h2><p>每个人格一个记忆库；点左边看具体聊过什么。</p></div>
         <div class="right">
           <button class="btn ghost sm" onclick="loadMemList()">刷新</button>
-          <button class="btn danger sm" onclick="clearMem()">清空这段</button>
+          <button class="btn ghost sm" onclick="downloadMem()">下载记忆</button>
+          <button class="btn sm savebtn" onclick="save(this)">保存设置</button>
+          <button class="btn danger sm" onclick="clearMem(this)">清空这段</button>
         </div>
+      </div>
+      <div class="grid g4" style="margin-bottom:14px">
+        <label class="f"><span>自动备份间隔（小时）</span>
+          <input type="number" id="backup_hours" min="0" max="720" step="1" oninput="markDirty()"><small>0 = 不自动备份</small></label>
+        <label class="f"><span>备份保留份数</span>
+          <input type="number" id="backup_keep" min="1" max="200" step="1" oninput="markDirty()"><small>超出的自动删旧的</small></label>
       </div>
       <div class="mem">
         <div class="mem-list" id="memlist"><div class="hint" style="padding:8px">加载中…</div></div>
@@ -588,38 +760,153 @@ async function reloadConfig() {
   const r = await fetch(A('/admin/config')); CFG = await r.json();
   const a = CFG.autoreply || {}, llm = a.llm || {}, ty = a.typing || {}, sp = a.split || {};
   // 「行为」页已删：自动回复 / 分段 / 打字延迟这些项只在 config.yaml 里改，页面不再碰它们
-  $('llm_enabled').checked = !!llm.enabled;
   $('base_url').value = llm.base_url || '';
   $('api_key').value = llm.api_key || '';
-  $('model').value = llm.model || '';
-  $('temperature').value = llm.temperature ?? 0.95;
-  $('tempv').textContent = llm.temperature ?? 0.95;
-  $('history').value = llm.history ?? 10;
+  setModelValue(llm.model || '');
+  // 温度 / 记忆轮数先从页面拿掉（等安排位置），config.yaml 里的值原样不动
   $('persona').value = llm.persona || '';
   $('pcount').textContent = ($('persona').value || '').length + ' 字';
-  // 白名单展示（在 autoreply.whitelist 里）
+  /* 语音合成：没配就是空的，留空不影响文字回复 */
+  /* 节奏卡：数值 / 概率（页面按 0-100 显示） */
+  const rd = a.reply_delay || {}, igc = a.ignore || {}, hl = a.humanlike || {};
+  const cu = a.catchup || {}, wd = a.wander || {}, mm = a.memory || {};
+  const setv = (id, v) => { const el = $(id); if (el) el.value = v; };
+  setv('rd_min', rd.min ?? 2);
+  setv('rd_max', rd.max ?? 15);
+  setv('ig_chance', Math.round((igc.chance ?? 0.04) * 100));
+  setv('ig_angry', Math.round((igc.angry_skip ?? 0.8) * 100));
+  setv('gprob', Math.round((a.group_reply_probability ?? 0.7) * 100));
+  setv('hl_short', Math.round((hl.short_chance ?? 0.12) * 100));
+  setv('hl_half', Math.round((hl.half_chance ?? 0.06) * 100));
+  setv('hl_burst', Math.round((hl.burst_chance ?? 0.15) * 100));
+  setv('cu_gap', cu.min_gap_seconds ?? 60);
+  setv('wd_hours', wd.hours ?? 3);
+  setv('mem_reflect', mm.reflect_every ?? 5);
+  setv('mem_retain', mm.retain_days ?? 14);
+  setv('diary_hour', mm.diary_hour ?? 23);
+  setv('backup_hours', mm.backup_hours ?? 6);
+  setv('backup_keep', mm.backup_keep ?? 20);
+  setv('grudge_hours', (a.grudge || {}).hours ?? 10);
+  const pv = a.proactive || {};
+  setv('pmin', pv.min_minutes ?? 45);
+  setv('pmax', pv.max_minutes ?? 180);
+  setv('quiet_start', pv.quiet_start ?? 23);
+  setv('quiet_end', pv.quiet_end ?? 8);
+  setv('pmaxday', pv.max_per_day ?? 6);
+  setv('sticker_pct', Math.round(((a.stickers || {}).probability ?? 0.35) * 100));
+  setv('typo_pct', Math.round(((a.playful || {}).typo_chance ?? 0.05) * 100));
+  setv('read_delay_pct', Math.round(((a.playful || {}).read_delay_chance ?? 0.06) * 100));
+  const tt = a.tts || {};
+  $('tts_provider').value = tt.provider || '';
+  $('tts_model').value = tt.model || '';
+  $('tts_voice').value = tt.voice || '';
+  $('tts_api_key').value = tt.api_key || '';
+  $('tts_base_url').value = tt.base_url || '';
+  $('ttsstate').textContent = tt.provider
+    ? (tt.provider + (tt.model ? ' · ' + tt.model : '')) : '未配置';
+  // 白名单（在 autoreply.whitelist 里，页面上能直接加/删）
   const allow = a.whitelist || CFG.allow || {};
-  const users = allow.users || [], groups = allow.groups || [];
-  $('wl-users').innerHTML = users.length ? users.map(u => `<span class="chip">${u}</span>`).join('')
-    : '<span class="chip">（空的 · 用 tools/claim.py --auto 认领，或改 config.yaml 的 autoreply.whitelist.users）</span>';
-  $('wl-groups').innerHTML = groups.length ? groups.map(g => `<span class="chip">${g}</span>`).join('')
-    : '<span class="chip">（没有群）</span>';
-  $('st-allow').textContent = users.length;
+  WL = {users: (allow.users || []).map(String), groups: (allow.groups || []).map(String)};
+  renderWL('users'); renderWL('groups');
+  $('st-allow').textContent = WL.users.length;
   document.querySelectorAll('#tab-llm input,#tab-persona textarea').forEach(el => el.oninput = markDirty);
   DIRTY = false;
   $('savest').textContent = '（没有改动）';
   updateSavebar();
 }
 
+/* ---------- 白名单：网页上直接加/删，存盘即生效 ---------- */
+let WL = {users: [], groups: []};
+let PROTO = {};          // 协议端信息（/admin/napcat）：kind / label / has_qr
+function renderWL(kind) {
+  const box = $(kind === 'users' ? 'wl-users' : 'wl-groups');
+  if (!box) return;
+  const list = WL[kind] || [];
+  box.innerHTML = list.length ? list.map(v =>
+    `<span class="wl-item"><i>${esc(v)}</i>` +
+    `<button title="从白名单删掉" onclick="wlRemove('${kind}','${esc(v)}')">×</button></span>`
+  ).join('') : '<span class="hint">（还没有，下面加一个）</span>';
+  const st = $('wl-state');
+  if (st) st.textContent = WL.users.length + ' 人 · ' + WL.groups.length + ' 群';
+}
+async function wlSave(kind, values, tip) {
+  try {
+    const d = await (await fetch(A('/admin/whitelist'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind: kind, values: values})
+    })).json();
+    if (!d.ok) { toast('失败：' + (d.error || ''), true); renderWL(kind); return false; }
+    WL = {users: d.whitelist.users, groups: d.whitelist.groups};
+    renderWL('users'); renderWL('groups');
+    $('st-allow').textContent = WL.users.length;
+    toast(tip);
+    return true;
+  } catch (e) {
+    toast('请求失败（服务在重启？）', true);
+    return false;
+  }
+}
+async function wlAdd(kind) {
+  const inp = $(kind === 'users' ? 'wl-user-in' : 'wl-group-in');
+  const v = (inp.value || '').trim();
+  if (!/^\d{4,13}$/.test(v)) return toast('要纯数字的 QQ 号 / 群号', true);
+  if ((WL[kind] || []).includes(v)) { inp.value = ''; return toast('已经在名单里了', true); }
+  if (await wlSave(kind, (WL[kind] || []).concat([v]), '已加入：' + v)) inp.value = '';
+}
+async function wlRemove(kind, v) {
+  if (!confirm('把 ' + v + ' 从白名单删掉？删掉后这个号发消息她就不回了')) return;
+  await wlSave(kind, (WL[kind] || []).filter(x => x !== v), '已删除：' + v);
+}
+['wl-user-in', 'wl-group-in'].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); wlAdd(id === 'wl-user-in' ? 'users' : 'groups'); }
+  });
+});
+
 /* ---------- NapCat 面板信息 ---------- */
 async function loadNapcat() {
   try {
     const d = await (await fetch(A('/admin/napcat'))).json();
     if (!d.ok) return;
+    PROTO = d;
+    // SnowLuma 的 WebUI 密码每次重启都会重新生成，后端会从 logs/stdout.log 里捞最新的
+    const autoPass = d.webui_pass || '';
     $('napcat-url').value = d.url;
-    $('napcat-token').value = d.token || '（没设密码）';
+    $('napcat-token').value = autoPass || d.token || (d.kind === 'napcat' ? '（没设密码）' : '（面板里自己设的登录密码，这里没存）');
     $('napcat-open').href = d.webui || d.url;
     $('napcat-link').href = d.webui || d.url;
+    $('napcat-link').textContent = (d.label || '协议端') + ' 面板';
+    if ($('proto-title')) $('proto-title').textContent = (d.label || '协议端') + ' 面板';
+    if ($('proto-desc')) {
+      $('proto-desc').textContent = d.has_qr
+        ? '扫码登录、看 QQ 在不在线、改连接配置都在这里。手机 QQ 扫面板里的二维码即可。'
+        : `扫码登录、看 QQ 在不在线、改连接配置都在 ${d.label} 自己的面板（${d.host}:${d.port}）里。`;
+    }
+    if ($('proto-token-tip')) {
+      if (autoPass) {
+        $('proto-token-tip').textContent =
+          `面板登录：${d.webui_user || 'admin'} / ${autoPass}（每次重启会变，这里自动读最新的）`;
+      } else {
+        $('proto-token-tip').textContent = d.has_qr
+          ? '打开面板时如果提示登录，把这个填进去'
+          : '没填就是面板里自己设的登录密码；填了 config.yaml 的 protocol.webui_token 就能一键带密码打开';
+      }
+    }
+    if (d.qq_running === false && $('proto-desc')) {
+      $('proto-desc').textContent = `QQ 进程没在跑 —— 先双击打开 QQ，再到 ${d.label} 面板里扫码登录。`;
+    }
+    // 只有 NapCat 会吐二维码图片；SnowLuma 在面板/桌面里扫
+    const qr = $('loginqr');
+    if (qr) qr.style.display = d.has_qr ? '' : 'none';
+    if ($('login-refresh')) $('login-refresh').style.display = d.has_qr ? '' : 'none';
+    if ($('login-open')) {
+      $('login-open').textContent = d.has_qr ? '打开面板扫码' : `打开 ${d.label} 面板扫码`;
+      $('login-open').href = d.webui || d.url;
+    }
+    if ($('needlogin-hint') && !d.has_qr) {
+      $('needlogin-hint').textContent = `在 ${d.label} 面板里用手机 QQ 扫码登录；登录成功后这一页自己会变绿。`;
+    }
   } catch (e) { /* 忽略 */ }
 }
 function copyNapcat() {
@@ -668,14 +955,18 @@ async function loadStatus() {
     $('st-acct').textContent = st.self_id || '—';
     $('st-plug').textContent = st.plugins ?? '—';
     $('needlogin').style.display = st.connected ? 'none' : 'block';
-    // 没登录就在这一页直接显示二维码，省得再开一个页面
+    // 没登录就在这一页直接显示二维码（只有 NapCat 有本地二维码；SnowLuma 给个「打开面板」按钮）
     if (!st.connected) {
       const q = $('loginqr');
-      if (q && Date.now() - (window.__qrAt || 0) > 4000) {
+      const hasQR = !PROTO || PROTO.has_qr !== false;
+      if (q && hasQR && Date.now() - (window.__qrAt || 0) > 4000) {
         q.src = A('/admin/qr.png') + '&t=' + Date.now();
         window.__qrAt = Date.now();
       }
-      if ($('loginstat')) $('loginstat').textContent = '等待扫码…';
+      if ($('loginstat')) {
+        $('loginstat').textContent = hasQR ? '等待扫码…'
+          : '在 ' + ((PROTO && PROTO.label) || '协议端') + ' 面板里扫码登录';
+      }
     } else if ($('loginstat')) {
       $('loginstat').textContent = '已登录 QQ ' + (st.self_id || '');
     }
@@ -691,41 +982,228 @@ async function refreshQR(btn) {
   setTimeout(() => { btn.disabled = false; btn.textContent = old; }, 18000);
 }
 
+/* ---------- 清空人格（两段式确认） ---------- */
+let PCLEAR_T = null;
+function clearPersona(btn) {
+  if (btn.dataset.armed !== '1') {          // 第一次点：只是上膛，不动内容
+    btn.dataset.armed = '1';
+    btn.textContent = '真的清空？再点一次';
+    btn.classList.add('armed');
+    clearTimeout(PCLEAR_T);
+    PCLEAR_T = setTimeout(() => {           // 10 秒没再点，自己退回去
+      btn.dataset.armed = '';
+      btn.classList.remove('armed');
+      btn.textContent = '清空';
+    }, 10000);
+    return;
+  }
+  clearTimeout(PCLEAR_T);                   // 第二次点：真清
+  btn.dataset.armed = '';
+  btn.classList.remove('armed');
+  btn.textContent = '已清空';
+  $('persona').value = '';
+  $('pcount').textContent = '0 字';
+  markDirty();                              // 空也是改动，要点保存才写进配置
+  toast('文字已清空 · 记忆和绑定都没动，记得点「保存」');
+  setTimeout(() => { btn.textContent = '清空'; }, 1600);
+}
+
 /* ---------- 保存 ---------- */
 function collect() {
   const a = JSON.parse(JSON.stringify(CFG.autoreply || {}));
+  // 只覆盖页面上有的字段；enabled（要不要回话）和 typing（打字机）归 config.yaml 管，原样带回去
   a.llm = Object.assign({}, a.llm, {
-    enabled: $('llm_enabled').checked, base_url: $('base_url').value.trim(), api_key: $('api_key').value.trim(),
-    model: $('model').value.trim(), temperature: +$('temperature').value, history: +$('history').value,
-    persona: $('persona').value
+    base_url: $('base_url').value.trim(), api_key: $('api_key').value.trim(),
+    model: $('model').value.trim(), persona: $('persona').value
+  });
+  /* 语音：只覆盖页面上有的字段，appid/token/cluster/voice_type 这些还在 config.yaml 里 */
+  a.tts = Object.assign({}, a.tts, {
+    provider: $('tts_provider').value.trim(), model: $('tts_model').value.trim(),
+    voice: $('tts_voice').value.trim(), api_key: $('tts_api_key').value.trim(),
+    base_url: $('tts_base_url').value.trim()
+  });
+  // 「节奏」卡：数值直接落进 config，百分比在页面上填 0-100
+  const num = (id, dflt) => { const v = parseFloat($(id).value); return isFinite(v) ? v : dflt; };
+  const pct = (id, dflt) => Math.max(0, Math.min(100, num(id, dflt))) / 100;
+  a.reply_delay = Object.assign({}, a.reply_delay, {
+    min: Math.max(0, num('rd_min', 2)), max: Math.max(0, num('rd_max', 15))
+  });
+  if (a.reply_delay.max < a.reply_delay.min) a.reply_delay.max = a.reply_delay.min;
+  a.ignore = Object.assign({}, a.ignore, {
+    chance: pct('ig_chance', 4), angry_skip: pct('ig_angry', 80)
+  });
+  a.group_reply_probability = pct('gprob', 70);
+  a.humanlike = Object.assign({}, a.humanlike, {
+    short_chance: pct('hl_short', 12), half_chance: pct('hl_half', 6), burst_chance: pct('hl_burst', 15)
+  });
+  a.catchup = Object.assign({}, a.catchup, {min_gap_seconds: Math.max(0, num('cu_gap', 60))});
+  a.wander = Object.assign({}, a.wander, {hours: Math.max(1, num('wd_hours', 3))});
+  a.memory = Object.assign({}, a.memory, {
+    reflect_every: Math.max(0, num('mem_reflect', 5)), retain_days: Math.max(1, num('mem_retain', 14)),
+    diary_hour: Math.max(0, Math.min(23, num('diary_hour', 23))),
+    backup_hours: Math.max(0, num('backup_hours', 6)), backup_keep: Math.max(1, num('backup_keep', 20))
+  });
+  a.grudge = Object.assign({}, a.grudge, {hours: Math.max(0, num('grudge_hours', 10))});
+  a.proactive = Object.assign({}, a.proactive, {
+    min_minutes: Math.max(5, num('pmin', 45)), max_minutes: Math.max(5, num('pmax', 180)),
+    quiet_start: Math.max(0, Math.min(23, num('quiet_start', 23))),
+    quiet_end: Math.max(0, Math.min(23, num('quiet_end', 8))),
+    max_per_day: Math.max(0, num('pmaxday', 6))
+  });
+  a.stickers = Object.assign({}, a.stickers, {probability: pct('sticker_pct', 35)});
+  a.playful = Object.assign({}, a.playful, {
+    typo_chance: pct('typo_pct', 5), read_delay_chance: pct('read_delay_pct', 6)
   });
   return a;
 }
-function markDirty() { DIRTY = true; $('savest').textContent = '有改动没保存'; $('savebar').classList.add('show'); }
+/* 保存按钮跟着卡片走：模型、语音、人格各一个，改哪儿存哪儿；
+   右下角那条保存栏照旧留着 —— 它是全页的，还带着「撤销」。 */
+function markSaveBtns(state) {   // 'idle' | 'dirty' | 'saved' | 'busy' | 'error'
+  const label = {idle: '保存', dirty: '保存 ·', saved: '已保存', busy: '保存中…', error: '重试'}[state] || '保存';
+  document.querySelectorAll('.savebtn').forEach(b => {
+    b.textContent = label;
+    b.classList.toggle('dirty', state === 'dirty');
+    b.title = state === 'dirty' ? '有改动，点这里保存' : '';
+  });
+}
+function markDirty() {
+  DIRTY = true;
+  markSaveBtns('dirty');
+  $('savest').textContent = '有改动没保存';
+  updateSavebar();
+}
 function updateSavebar() {
-  const on = ['tab-llm', 'tab-persona'].includes(document.querySelector('section.tab.active')?.id);
+  // 行内按钮能解决的两个页面就不弹右下角那条了
+  const on = document.querySelector('section.tab.active')?.id === 'tab-persona';
   $('savebar').classList.toggle('show', on);
 }
-async function save() {
+async function save(btn) {
+  markSaveBtns('busy');
   $('savest').textContent = '保存中…';
-  const r = await fetch(A('/admin/save'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({autoreply: collect()})});
-  const d = await r.json();
-  if (d.ok) { CFG.autoreply = collect(); DIRTY = false; $('savest').textContent = '已保存 ' + new Date().toLocaleTimeString(); toast('已保存，立即生效'); }
-  else { $('savest').textContent = '保存失败'; toast('保存失败：' + (d.error || ''), true); }
+  let d = {};
+  try {
+    const r = await fetch(A('/admin/save'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({autoreply: collect()})});
+    d = await r.json();
+  } catch (e) { d = {ok: false, error: String(e)}; }
+  if (d.ok) {
+    CFG.autoreply = collect();
+    DIRTY = false;
+    markSaveBtns('saved');
+    setTimeout(() => markSaveBtns('idle'), 1600);
+    $('savest').textContent = '已保存 ' + new Date().toLocaleTimeString();
+    const t = (CFG.autoreply || {}).tts || {};
+    if ($('ttsstate')) $('ttsstate').textContent = t.provider ? (t.provider + (t.model ? ' · ' + t.model : '')) : '未配置';
+    toast('已保存，立即生效');
+  } else {
+    markSaveBtns('error');
+    $('savest').textContent = '保存失败';
+    toast('保存失败：' + (d.error || ''), true);
+  }
 }
 document.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); } });
 
 /* ---------- 模型 ---------- */
 function peekKey() { const el = $('api_key'); el.type = el.type === 'password' ? 'text' : 'password'; }
+/* 下拉里没有就临时补一个（配置里写了列表外的模型名时用） */
+function setModelValue(v) {
+  const sel = $('model');
+  if (!sel) return;
+  v = (v || '').trim();
+  if (v && !Array.from(sel.options).some(o => o.value === v)) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = v; sel.appendChild(o);
+  }
+  sel.value = v;
+}
+/* 保存前先测一遍：密钥通不通、模型名对不对、能不能真说出一句话。
+   用的是【表单里当前的值】，不是已保存的配置 —— 换完 key 直接就能验。 */
+async function testLLM(btn) {
+  const box = $('llmtest');
+  box.style.display = '';
+  box.textContent = '正在测：① 用 /models 验密钥 → ② 让它说一句话…';
+  if (btn) { btn.disabled = true; btn.textContent = '测试中…'; }
+  try {
+    const r = await fetch(A('/admin/test'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({autoreply: collect(), text: '用一句话跟我打个招呼'})
+    });
+    const d = await r.json();
+    const L = [];
+    L.push((d.ok ? '✅ 通过，这套配置能用' : '❌ 没通过，先别保存') + `\n地址 ${d.base_url || '(空)'}　模型 ${d.model || '(空)'}`);
+    if (d.key_ok === true) L.push('密钥　✅ ' + (d.key_msg || '有效'));
+    else if (d.key_ok === false) L.push('密钥　❌ ' + (d.key_msg || '无效'));
+    else if (d.key_msg) L.push('密钥　• ' + d.key_msg);
+    if (d.model_found === false) L.push('模型　⚠️ 接口的模型列表里没有这个名字');
+    if (d.ok) {
+      L.push(`耗时　${d.ms} ms　tokens ${d.tokens || '?'}`);
+      L.push('它说　' + (d.reply || '(空)'));
+    }
+    if (d.error) L.push('问题　' + d.error);
+    if (d.hint) L.push('怎么办　' + d.hint);
+    box.textContent = L.join('\n');
+    toast(d.ok ? '测试通过，可以保存' : '测试没通过，看页面上的那几行', !d.ok);
+  } catch (e) {
+    box.textContent = '测试请求本身失败了：' + e;
+    toast('测试请求失败', true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '测试一下'; }
+  }
+}
+/* 语音合成也测一下：真合成一条，回耗时 + 文件大小 */
+function peekTTSKey() { const el = $('tts_api_key'); el.type = el.type === 'password' ? 'text' : 'password'; }
+async function testTTS(btn) {
+  const box = $('ttstest');
+  box.style.display = '';
+  box.textContent = '正在合成一句「测试一下，一二三」…';
+  if (btn) { btn.disabled = true; btn.textContent = '合成中…'; }
+  try {
+    const r = await fetch(A('/admin/test_tts'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({autoreply: collect()})
+    });
+    const d = await r.json();
+    const L = [];
+    L.push((d.ok ? '✅ 语音通了' : '❌ 没通')
+      + `　提供方 ${d.provider || '(未填)'}　模型 ${d.model || '(未填)'}　音色 ${d.voice || '(未填)'}`);
+    if (d.ok) {
+      L.push(`耗时　${d.ms} ms`);
+      L.push(`文件　${d.file || ''}　${d.size ? Math.round(d.size / 1024) + ' KB' : ''}`);
+    }
+    if (d.error) L.push('问题　' + d.error);
+    if (d.hint) L.push('怎么办　' + d.hint);
+    box.textContent = L.join('\n');
+    toast(d.ok ? '语音正常，可以保存' : '语音没通，看页面上的那几行', !d.ok);
+  } catch (e) {
+    box.textContent = '测试请求本身失败了：' + e;
+    toast('测试请求失败', true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '测一下'; }
+  }
+}
 async function loadModels() {
   toast('正在拉取模型列表…');
   const r = await fetch(A('/admin/models')); const d = await r.json();
   if (!d.ok) { toast('拉取失败：' + (d.error || ''), true); return; }
-  const dl = $('models'); dl.innerHTML = '';
-  d.models.forEach(m => { const o = document.createElement('option'); o.value = m; dl.appendChild(o); });
-  $('modelchips').innerHTML = d.models.slice(0, 30)
-    .map(m => `<span class="chip click" onclick="$('model').value='${m}';markDirty()">${m}</span>`).join('');
-  toast('共 ' + d.models.length + ' 个模型，点一下就能填进去');
+  const sel = $('model');
+  const cur = sel.value;
+  const rows = (d.detail && d.detail.length) ? d.detail : (d.models || []).map(id => ({id: id, name: '', context: 0}));
+  const fmtCtx = n => !n ? '' : (n >= 1048576 ? (n / 1048576).toFixed(0) + 'M'
+    : n >= 1024 ? Math.round(n / 1024) + 'K' : String(n));
+  sel.innerHTML = rows.map(m =>
+    `<option value="${esc(m.id)}">${esc(m.name && m.name !== m.id ? m.id + ' · ' + m.name : m.id)}</option>`
+  ).join('') || '<option value="">（接口没给模型列表）</option>';
+  setModelValue(cur || (rows[0] && rows[0].id) || '');
+  $('modelchips').innerHTML = rows.map(m => {
+    const t = [m.name, m.context ? '上下文 ' + fmtCtx(m.context) : ''].filter(Boolean).join(' · ');
+    return `<span class="chip click" title="${esc(t)}" onclick="setModelValue('${esc(m.id)}');markDirty()">${esc(m.id)}</span>`;
+  }).join('');
+  // 这行小字顺便说明"这些就是接口返回的全部"，省得以为被截断了
+  const ctxs = [...new Set(rows.map(m => fmtCtx(m.context)).filter(Boolean))];
+  if ($('modelhint')) {
+    $('modelhint').textContent = `接口 ${d.endpoint || '/models'} 就只返回这 ${d.count ?? rows.length} 个`
+      + (ctxs.length ? `（上下文 ${ctxs.join(' / ')}）` : '') + '；要填列表外的模型名直接改 config.yaml';
+  }
+  toast('接口返回 ' + (d.count ?? rows.length) + ' 个模型');
 }
 
 
@@ -755,16 +1233,62 @@ async function loadMemList() {
   const d = await (await fetch(A('/admin/memory'))).json();
   if (!d.ok) { $('memlist').innerHTML = '<div class="hint" style="padding:8px">读取失败：' + esc(d.error || '') + '</div>'; return; }
   if (!d.chats.length) { $('memlist').innerHTML = '<div class="hint" style="padding:8px">还没有会话记录</div>'; return; }
-  $('memlist').innerHTML = d.chats.map((c, i) =>
-    `<div class="mem-item${i === 0 ? ' active' : ''}" data-i="${i}">
-       <span>${esc(c.chat)}</span><i>${c.count}${c.persona ? ' · ' + esc(c.persona) : ''}</i>
-     </div>`).join('');
-  document.querySelectorAll('.mem-item').forEach(el => el.onclick = () => {
-    document.querySelectorAll('.mem-item').forEach(x => x.classList.toggle('active', x === el));
-    showMem(d.chats[+el.dataset.i]);
+  const name = (cid) => cid.startsWith('u') ? ('QQ ' + cid.slice(1))
+    : cid.startsWith('g') ? ('群 ' + cid.slice(1)) : cid;
+  $('memlist').innerHTML = d.chats.map((c, i) => {
+    const ps = c.personas || [];
+    const subs = ps.length ? ps.map((p, j) =>
+      `<div class="mem-sub" data-c="${i}" data-p="${j}">
+         <span>${esc(p.persona || '默认')}</span><i>${p.count}</i></div>`).join('') : '';
+    return `<div class="mem-item${i === 0 ? ' active' : ''}" data-i="${i}">
+       <span style="flex:1">${esc(name(c.chat))}</span>
+       <i>${c.count}${ps.length > 1 ? ' · ' + ps.length + ' 个人格 ▾' : (ps.length === 1 ? ' · ' + esc(ps[0].persona) : '')}</i>
+       <button class="btn danger sm mem-del" data-c="${i}">删除</button>
+     </div>
+     <div class="mem-subs" id="subs${i}" style="display:none">${subs}</div>`;
+  }).join('');
+  document.querySelectorAll('.mem-del').forEach(btn => btn.onclick = async (ev) => {
+    ev.stopPropagation();
+    const c = d.chats[+btn.dataset.c];
+    const now = Date.now();
+    if (btn.dataset.arm !== c.chat || now - (+btn.dataset.ts || 0) > 8000) {
+      btn.dataset.arm = c.chat; btn.dataset.ts = now;
+      btn.textContent = '真删？再点'; btn.classList.add('armed');
+      setTimeout(() => {
+        if (Date.now() - (+btn.dataset.ts || 0) >= 8000) {
+          btn.textContent = '删除'; btn.classList.remove('armed'); btn.dataset.arm = '';
+        }
+      }, 8200);
+      return;
+    }
+    btn.textContent = '删除中…'; btn.classList.remove('armed');
+    const r = await fetch(A('/admin/memory/clear'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({persona: '', chat: c.chat})});
+    const j = await r.json();
+    toast(j.ok ? ('已删除 ' + (c.chat) + ' 的全部记忆') : ('失败：' + (j.error || '')), !j.ok);
+    loadMemList();
   });
-  MEMSEL = d.chats[0];
-  showMem(d.chats[0]);
+  document.querySelectorAll('.mem-item').forEach(el => el.onclick = () => {
+    const i = +el.dataset.i, box = $('subs' + i);
+    document.querySelectorAll('.mem-item').forEach(x => x.classList.toggle('active', x === el));
+    document.querySelectorAll('.mem-subs').forEach((b, k) => { if (k !== i) b.style.display = 'none'; });
+    const c = d.chats[i], ps = c.personas || [];
+    if (ps.length > 1) {
+      const open = box.style.display !== 'none';
+      box.style.display = open ? 'none' : 'block';
+      if (!open) return;                 // 展开人格，先不选具体那个
+    }
+    showMem({persona: (ps[0] || {}).persona || '', chat: c.chat});
+  });
+  document.querySelectorAll('.mem-sub').forEach(el => el.onclick = (ev) => {
+    ev.stopPropagation();
+    const c = d.chats[+el.dataset.c], p = (c.personas || [])[+el.dataset.p] || {};
+    document.querySelectorAll('.mem-sub').forEach(x => x.classList.toggle('active', x === el));
+    showMem({persona: p.persona || '', chat: c.chat});
+  });
+  const first = d.chats[0], fps = first.personas || [];
+  MEMSEL = {persona: (fps[0] || {}).persona || '', chat: first.chat};
+  showMem(MEMSEL);
 }
 async function showMem(c) {
   if (!c) return;
@@ -784,14 +1308,44 @@ async function showMem(c) {
     <div class="block-title">最近对话</div>
     <div class="bubbles">${bubs || '<div class="hint">（没有记录）</div>'}</div>`;
 }
-async function clearMem() {
+let CLEAR_ARM = 0, CLEAR_CHAT = '';
+async function clearMem(btn) {
   if (!MEMSEL) return toast('先选一个会话', true);
-  if (!confirm(`确定清空 ${MEMSEL.chat} 的记忆？清完就完全不记得你们聊过什么了`)) return;
+  const now = Date.now();
+  if (CLEAR_CHAT !== MEMSEL.chat || now - CLEAR_ARM > 8000) {
+    CLEAR_CHAT = MEMSEL.chat;
+    CLEAR_ARM = now;
+    if (btn) { btn.textContent = '真的清空？再点一次'; btn.classList.add('armed'); }
+    setTimeout(() => {
+      if (Date.now() - CLEAR_ARM >= 8000 && btn) { btn.textContent = '清空这段'; btn.classList.remove('armed'); }
+    }, 8200);
+    return;
+  }
+  CLEAR_ARM = 0; CLEAR_CHAT = '';
+  if (btn) { btn.textContent = '清空这段'; btn.classList.remove('armed'); }
   const r = await fetch(A('/admin/memory/clear'), {method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({persona: MEMSEL.persona, chat: MEMSEL.chat})});
   const d = await r.json();
   toast(d.ok ? '已清空' : '失败：' + (d.error || ''), !d.ok);
   loadMemList();
+}
+
+async function downloadMem() {
+  toast('打包中…');
+  try {
+    const r = await fetch(A('/admin/memory/export'));
+    if (!r.ok) return toast('打包失败', true);
+    const b = await r.blob();
+    const a = document.createElement('a');
+    const d = new Date();
+    const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0')
+      + '-' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0');
+    a.href = URL.createObjectURL(b);
+    a.download = 'memory-' + stamp + '.zip';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('已开始下载');
+  } catch (e) { toast('打包失败：' + e, true); }
 }
 
 /* ---------- 日志 ---------- */

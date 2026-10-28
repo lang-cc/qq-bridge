@@ -25,7 +25,7 @@ async def describe(
     """返回模型对图片的描述；失败返回空串。"""
     import aiohttp
 
-    picked = [p for p in images if Path(p).exists()][:max_images]
+    picked = [p for p in images if str(p).startswith("http") or Path(p).exists()][:max_images]
     if not picked:
         return ""
     if not base_url or not api_key:
@@ -33,6 +33,9 @@ async def describe(
 
     content: list[dict] = [{"type": "text", "text": question}]
     for p in picked:
+        if str(p).startswith("http"):       # QQ 图片直接给链接，省一次下载
+            content.append({"type": "image_url", "image_url": {"url": p}})
+            continue
         try:
             b64 = base64.b64encode(Path(p).read_bytes()).decode()
         except Exception:

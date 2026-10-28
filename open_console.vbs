@@ -1,44 +1,60 @@
 Option Explicit
-' qq-bridge desktop entry.
-' One icon does everything: make sure the service (8088) and NapCat (6099) are up,
-' then open the web console at 8088/admin. There is no desktop GUI any more.
-Dim sh, fso, root, code, token, url, f, line, parts, i, need
-Dim pyw, n8088, n6099
+' qq-bridge desktop entry (Windows).  ASCII only - do not put Chinese here.
+'
+' Double-click: make sure the bot service on 8088 is up, then open the web console
+' at http://127.0.0.1:8088/admin .
+'
+' The protocol backend (NapCat / SnowLuma) is NOT checked here: boot.py and
+' watchdog.py already handle it via qqbot/proto.py. This script only cares about
+' 8088, so it keeps working whichever backend config.yaml points at.
+
+Dim sh, fso, root, f, line, parts, token, url, i, up, pyw
 
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 root = fso.GetParentFolderName(WScript.ScriptFullName)
 
-Function PortUp(p)
-    Dim rc
-    rc = sh.Run("cmd /c netstat -ano | findstr "":" & p & """ | findstr LISTENING", 0, True)
-    PortUp = (rc = 0)
+' Is 8088 alive? Ask /status - more reliable than parsing netstat.
+Function SvcUp()
+    Dim http
+    On Error Resume Next
+    SvcUp = False
+    Set http = CreateObject("MSXML2.XMLHTTP")
+    http.Open "GET", "http://127.0.0.1:8088/status", False
+    http.Send
+    If Err.Number = 0 Then
+        If http.Status = 200 Then SvcUp = True
+    End If
+    Err.Clear
+    On Error Goto 0
 End Function
 
-n8088 = PortUp(8088)
-n6099 = PortUp(6099)
+up = SvcUp()
 
-If (Not n8088) Or (Not n6099) Then
+If Not up Then
     pyw = root & "\.venv\Scripts\pythonw.exe"
     If fso.FileExists(pyw) And fso.FileExists(root & "\boot.py") Then
         sh.CurrentDirectory = root
-        ' boot.py: start service + NapCat + watchdog, and pop the QR window if logged out
+        ' boot.py starts the service + protocol backend + watchdog, silently.
         sh.Run """" & pyw & """ boot.py", 0, False
-        For i = 1 To 40
-            WScript.Sleep 3000
-            If PortUp(8088) Then Exit For
+        For i = 1 To 30
+            WScript.Sleep 2000
+            If SvcUp() Then
+                up = True
+                Exit For
+            End If
         Next
     End If
 End If
 
-If Not PortUp(8088) Then
-    MsgBox "The bot service did not start." & vbCrLf & vbCrLf & _
-           "Check: " & root & "\logs\boot.log" & vbCrLf & _
-           "Or run: .venv\Scripts\python.exe selfcheck.py", 48, "qq-bridge"
+If Not up Then
+    MsgBox "The bot service on 8088 did not come up." & vbCrLf & vbCrLf & _
+           "Look at: " & root & "\logs\boot.log" & vbCrLf & _
+           "Or run : .venv\Scripts\python.exe selfcheck.py", 48, "qq-bridge"
     WScript.Quit 1
 End If
 
-' use the token from config.yaml (http_api.token) when one is set
+' Use http_api.token when it is set, so the browser lands straight in.
 token = ""
 On Error Resume Next
 If fso.FileExists(root & "\config.yaml") Then

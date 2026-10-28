@@ -1,14 +1,14 @@
-"""扫码登录小工具：一键弹出 NapCat 二维码，扫完自动接上并拉起机器人。
+"""扫码登录小工具：把协议端拉起来并盯到登录成功，然后拉起机器人。
 
 用法：
     python login_qr.py          # 有窗口
     pythonw login_qr.py         # 无控制台
 
-做的事：
-1. NapCat 没跑就拉起来
-2. 用 Edge/Chrome 的应用窗口打开登录页，自动切到「扫码登录」
-3. 二维码 90 秒没扫会自动点「刷新二维码」（最多 3 次）
-4. 登录成功后自动关窗口、拉起 qq-bridge 服务
+两种后端（config.yaml 的 protocol_backend）：
+  napcat   弹出 NapCat 登录页 → 自动切「扫码登录」→ 二维码过期自动刷新
+  snowluma 二维码在 QQ 自己的窗口里，程序代替不了，只能提示人去扫，然后轮询 3000 端口
+
+登录成功后都会拉起 qq-bridge 服务。
 """
 
 from __future__ import annotations
@@ -64,23 +64,21 @@ def find_browser() -> str | None:
 
 
 def start_napcat() -> bool:
-    if port_open(WEBUI_PORT):
-        say("NapCat 已经在跑")
+    """把协议端拉起来（NapCat / SnowLuma 都走这里）。"""
+    from qqbot import proto
+
+    name = proto.backend(ROOT)
+    if proto.is_up(ROOT, name):
+        say(f"{name} 已经在跑")
         return True
-    say("NapCat 没启动，正在拉起…")
-    bat = ROOT / "napcat" / "launcher-user-silent.bat"
-    if not bat.exists():
-        say(f"找不到 {bat}")
+    say(f"{name} 没启动，正在拉起…")
+    if not proto.start(ROOT, ACCOUNT):
+        say(f"找不到 {name} 的启动文件（目录是否完整？）")
         return False
-    subprocess.Popen(["cmd", "/c", str(bat), *napcat_launch_args(ACCOUNT)],
-                     cwd=str(ROOT / "napcat"),
-                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    for _ in range(60):
-        if port_open(WEBUI_PORT):
-            say("NapCat 已启动")
-            return True
-        time.sleep(1)
-    say("NapCat 启动超时")
+    if proto.wait_up(ROOT, 90):
+        say(f"{name} 已启动")
+        return True
+    say(f"{name} 启动超时")
     return False
 
 
@@ -88,6 +86,11 @@ async def drive_login() -> bool:
     """开应用窗口 → 切扫码登录 → 轮询直到登录成功。"""
     import aiohttp
     import websockets
+
+    from qqbot import proto
+
+    if proto.backend(ROOT) != "napcat":
+        return await _drive_login_snowluma()
 
     token = webui_token()
     url = f"http://127.0.0.1:{WEBUI_PORT}/webui/?token={token}"
@@ -179,6 +182,24 @@ async def drive_login() -> bool:
                     deadline = time.time() + 90
     proc.terminate()
     say("没等到登录，窗口已关，重新运行本工具即可")
+    return False
+
+
+async def _drive_login_snowluma() -> bool:
+    """SnowLuma：二维码在 QQ 窗口里，只能人去扫，我们负责把窗口叫出来并等上线。"""
+    from qqbot import proto
+
+    if not proto.ensure_qq(ROOT):
+        say("找不到 QQ 客户端，先手动打开 QQ 再试")
+        return False
+    say(proto.login_hint(ROOT))
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        await asyncio.sleep(3)
+        if proto.online():
+            say("登录成功 ✅")
+            return True
+    say("没等到登录。QQ 窗口里点「扫码登录」再扫一次，或者重新运行本工具")
     return False
 
 

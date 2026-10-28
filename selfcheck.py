@@ -123,8 +123,29 @@ def check() -> list[dict]:
     # 11 看门狗
     add("掉线监控", port(9335), "运行中" if port(9335) else "未运行",
         "面板 →「自动修复」，建议常开")
-    # 12 NapCat
-    add("NapCat", port(6099), "WebUI 在线" if port(6099) else "未运行", "看 napcat 目录是否完整")
+    # 12 协议端（SnowLuma / NapCat）：端口统一问 qqbot.proto，别再各处写死
+    try:
+        sys.path.insert(0, str(ROOT))
+        from qqbot import proto as _proto
+
+        label = {"snowluma": "SnowLuma", "napcat": "NapCat"}.get(_proto.backend(), "协议端")
+        pport = _proto.webui_port()
+        alive = _proto.is_up()
+    except Exception:
+        from urllib.parse import urlparse
+
+        proto_cfg = cfg.get("protocol") or {}
+        kind = str(proto_cfg.get("kind") or cfg.get("protocol_backend") or "snowluma")
+        webui = str(proto_cfg.get("webui")
+                    or ("http://127.0.0.1:6099" if kind == "napcat" else "http://127.0.0.1:5099"))
+        try:
+            pport = urlparse(webui if "//" in webui else "http://" + webui).port or 5099
+        except Exception:
+            pport = 5099
+        label = {"snowluma": "SnowLuma", "napcat": "NapCat"}.get(kind, "协议端")
+        alive = port(pport)
+    add(f"协议端 {label}", alive, f"面板 {pport} 在线" if alive else f"面板 {pport} 未监听",
+        "把协议端拉起来，登录还在就用不着重新扫码")
     return out
 
 
