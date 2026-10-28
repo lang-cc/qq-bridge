@@ -23,6 +23,20 @@ SILK_EXT = (".silk", ".slk")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SILK_SCRIPT = os.path.join(ROOT, "tools", "silk", "encode.mjs")
 
+# 协议端跑在容器里时（Linux + docker NapCat），宿主机 /tmp 对容器不可见，
+# 发过去只会报「Failed to open input」。用这两个环境变量把 silk 落到容器挂载的目录：
+#   QQ_SILK_DIR=/opt/napcat/config/qqbot-voice          （宿主机上真实路径）
+#   QQ_SILK_CONTAINER_PREFIX=/app/napcat/config/qqbot-voice（同一目录在容器里的路径）
+SILK_DIR = os.environ.get("QQ_SILK_DIR", "").strip()
+SILK_CONTAINER_PREFIX = os.environ.get("QQ_SILK_CONTAINER_PREFIX", "").strip()
+
+
+def _visible(path: str) -> str:
+    """宿主机路径 → 容器内路径。没配就原样返回（Windows 本地单机场景）。"""
+    if SILK_DIR and SILK_CONTAINER_PREFIX and path.startswith(SILK_DIR):
+        return SILK_CONTAINER_PREFIX.rstrip("/") + path[len(SILK_DIR):]
+    return path
+
 
 def _find(explicit: str | None, names: list[str], extra_dirs: list[str]) -> str | None:
     if explicit and os.path.isfile(explicit):
@@ -126,7 +140,15 @@ def prepare(src: str, cfg: dict | None = None) -> str:
         log.warning("没有 ffmpeg，无法转码语音，直接发送原文件：%s", src)
         return src
 
-    workdir = tempfile.mkdtemp(prefix="qqbridge-silk-")
+    if SILK_DIR:
+        try:
+            os.makedirs(SILK_DIR, exist_ok=True)
+            workdir = tempfile.mkdtemp(prefix="silk-", dir=SILK_DIR)
+        except OSError as exc:
+            log.warning("silk 目录不可写（%s），退回系统临时目录：%r", SILK_DIR, exc)
+            workdir = tempfile.mkdtemp(prefix="qqbridge-silk-")
+    else:
+        workdir = tempfile.mkdtemp(prefix="qqbridge-silk-")
     pcm = os.path.join(workdir, "voice.pcm")
     out = os.path.join(workdir, "voice.silk")
     try:
@@ -142,7 +164,7 @@ def prepare(src: str, cfg: dict | None = None) -> str:
             subprocess.run([node, SILK_SCRIPT, pcm, "24000", out], check=True, capture_output=True)
             if os.path.isfile(out) and os.path.getsize(out) > 0:
                 log.info("语音已转 silk（silk-wasm）：%s", out)
-                return out
+                return _visible(out)
         except subprocess.CalledProcessError as exc:
             log.warning("silk-wasm 编码失败：%s", exc.stderr[-200:] if exc.stderr else exc)
 
@@ -160,7 +182,7 @@ def prepare(src: str, cfg: dict | None = None) -> str:
                 continue
             if os.path.isfile(out) and os.path.getsize(out) > 0:
                 log.info("语音已转 silk（原生编码器）：%s", out)
-                return out
+                return _visible(out)
 
     log.warning("silk 编码不可用（缺 node 或 silk-wasm），直接发送原文件：%s", src)
     return src

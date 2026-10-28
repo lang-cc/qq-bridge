@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 from typing import Any
 
@@ -99,7 +100,9 @@ class HttpApi:
                 web.post("/admin/plugins/toggle", self.h_admin_plugin_toggle),
                 web.get("/admin/features", self.h_admin_features),
                 web.get("/admin/napcat", self.h_admin_napcat),
+                web.get("/admin/protocol", self.h_admin_napcat),
                 web.get("/admin/health", self.h_admin_health),
+                web.post("/admin/whitelist", self.h_admin_whitelist),
                 web.post("/admin/features/toggle", self.h_admin_feature_toggle),
             ]
         )
@@ -416,33 +419,132 @@ class HttpApi:
         log.info("插件开关：%s -> %s", pid, "开" if enabled else "关")
         return _j({"ok": True, "id": pid, "enabled": enabled, "disabled": sorted(new)})
 
-    async def h_admin_napcat(self, request: web.Request) -> web.Response:
-        """NapCat 面板地址 + 密码（网页配置台主页上要给用户看）。"""
-        self._auth(request)
+    # ---------------- 协议端（SnowLuma / NapCat） ----------------
+    def _protocol(self) -> dict:
+        """面板地址等信息，以 config.yaml 的 protocol 段为准。
+
+        以前这里写死读 napcat/config/webui.json —— 换成 SnowLuma 之后就没有那个文件了，
+        所以改成配置驱动：kind 决定名字和二维码来源，webui 决定地址。
+        """
         import json
         from pathlib import Path as _P
+        from urllib.parse import urlparse
 
-        info = {"ok": True, "port": 6099, "token": "", "url": "http://127.0.0.1:6099", "webui": ""}
-        for rel in ("napcat/config/webui.json", "napcat/webui.json"):
-            f = _P(rel)
-            if not f.exists():
-                continue
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-            except Exception as exc:
-                return _j({"ok": False, "error": "读不了 %s：%r" % (rel, exc)})
-            port = int(data.get("port") or 6099)
-            token = str(data.get("token") or "")
-            info.update({
-                "port": port,
-                "token": token,
-                "url": "http://127.0.0.1:%d" % port,
-                "webui": "http://127.0.0.1:%d/webui?token=%s" % (port, token) if token
-                         else "http://127.0.0.1:%d/webui" % port,
-                "file": rel,
-            })
-            break
+        cfg = {"kind": "snowluma", "webui": "http://127.0.0.1:5099", "webui_token": ""}
+        try:
+            from .config import load_config
+
+            sec = load_config("config.yaml").section("protocol") or {}
+            for k in ("kind", "webui", "webui_token"):
+                if sec.get(k) not in (None, ""):
+                    cfg[k] = str(sec[k])
+        except Exception as exc:
+            log.debug("读 protocol 配置失败：%r", exc)
+
+        kind, url, token = cfg["kind"], str(cfg["webui"]), str(cfg["webui_token"])
+
+        # 老装机（NapCat）：面板端口和密码写在 napcat/config/webui.json
+        if kind == "napcat":
+            for rel in ("napcat/config/webui.json", "napcat/webui.json"):
+                f = _P(rel)
+                if not f.exists():
+                    continue
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                except Exception:
+                    break
+                url = "http://127.0.0.1:%d" % int(data.get("port") or 6099)
+                token = str(data.get("token") or token)
+                break
+
+        u = urlparse(url if "//" in url else "http://" + url)
+        port = u.port or (443 if u.scheme == "https" else 80)
+        webui = url.rstrip("/")
+        if token and "token=" not in webui:
+            webui = "%s/?token=%s" % (webui, token)
+        return {
+            "kind": kind,
+            "label": {"snowluma": "SnowLuma", "napcat": "NapCat"}.get(kind, kind or "协议端"),
+            "url": url.rstrip("/"),
+            "host": u.hostname or "127.0.0.1",
+            "port": port,
+            "token": token,
+            "webui": webui,
+            # 只有 NapCat 会把二维码落到本地文件；SnowLuma 走面板/桌面扫码
+            "has_qr": kind == "napcat",
+        }
+
+    async def h_admin_napcat(self, request: web.Request) -> web.Response:
+        """协议端面板地址 + 密码（配置台主页上要给用户看）。路由名保留 napcat 是为了兼容老调用。"""
+        self._auth(request)
+        info = self._protocol()
+        info["ok"] = True
         return _j(info)
+
+    # ---------------- 白名单（网页上直接加/删） ----------------
+    async def h_admin_whitelist(self, request: web.Request) -> web.Response:
+        """把白名单整份写回 config.yaml 并立即生效（不用重启）。"""
+        self._auth(request)
+        from .admin import edit_whitelist
+
+        data = await self._body(request)
+        kind = str(data.get("kind") or "users")
+        if kind not in ("users", "groups"):
+            return _j({"ok": False, "error": "kind 只能是 users / groups"}, status=400)
+        values = data.get("values")
+        if not isinstance(values, list):
+            return _j({"ok": False, "error": "values 必须是数组"}, status=400)
+
+        clean: list[str] = []
+        for v in values:
+            s = str(v).strip().strip("'\"")
+            if not s:
+                continue
+            if not s.isdigit() or not (4 <= len(s) <= 13):
+                return _j({"ok": False, "error": f"「{s[:20]}」不是合法号码（纯数字 4–13 位）"}, status=400)
+            if s not in clean:
+                clean.append(s)
+        if len(clean) > 200:
+            return _j({"ok": False, "error": "最多 200 个"}, status=400)
+
+        try:
+            saved = edit_whitelist(kind, clean)
+        except Exception as exc:
+            log.warning("白名单写入失败：%r", exc)
+            return _j({"ok": False, "error": f"写 config.yaml 失败：{exc!r}"}, status=500)
+
+        # 内存里的配置同步换掉，下一句消息就按新名单判断
+        cfgobj = getattr(self.bot, "config", None)
+        try:
+            ar = dict((cfgobj.raw or {}).get("autoreply") or {})
+            wl = dict(ar.get("whitelist") or {})
+            wl[kind] = saved
+            ar["whitelist"] = wl
+            cfgobj.raw["autoreply"] = ar
+        except Exception as exc:
+            log.warning("白名单写回内存失败：%r", exc)
+        engine = self._engine()
+        if engine is not None:
+            try:
+                engine.refresh()
+            except Exception:
+                pass
+
+        now = {}
+        if engine is not None:
+            now = dict(engine.cfg.get("whitelist") or {})
+        if not now:
+            now = dict((((cfgobj.raw or {}).get("autoreply") or {}).get("whitelist") or {})) if cfgobj else {}
+        return _j({
+            "ok": True,
+            "kind": kind,
+            "values": saved,
+            "whitelist": {
+                "users": [str(x) for x in (now.get("users") or [])],
+                "groups": [str(x) for x in (now.get("groups") or [])],
+                "enabled": bool(now.get("enabled", True)),
+            },
+        })
 
     # ---------------- 主页「服务在线」监控 ----------------
     async def h_admin_health(self, request: web.Request) -> web.Response:
@@ -510,11 +612,13 @@ class HttpApi:
             f"账号 {sid}" if sid else "还没登录",
             "掉线了在主页点「扫码登录」")
 
-        # 4 NapCat 协议端
-        nc_ok = tcp(6099)
-        add("napcat", "NapCat 协议端", nc_ok,
-            "WebUI :6099 在线" if nc_ok else "6099 连不上",
-            "双击桌面「QQ机器人」会把它拉起来")
+        # 4 协议端（SnowLuma / NapCat）：探它的面板端口
+        proto = self._protocol()
+        nc_ok = tcp(int(proto["port"]), str(proto["host"]))
+        add("protocol", f"协议端 · {proto['label']}", nc_ok,
+            f"WebUI {proto['host']}:{proto['port']} 在线" if nc_ok
+            else f"{proto['host']}:{proto['port']} 连不上",
+            "把协议端拉起来，再在面板里确认 QQ 已登录")
 
         # 5 模型接口（只探 TCP 握手，不发请求、不花钱）
         llm = cfg.get("llm") or {}
@@ -813,8 +917,15 @@ setInterval(async()=>{
 </script></body></html>"""
 
     async def h_admin_login(self, request: web.Request) -> web.Response:
-        """扫码登录：Windows 拉起桌面窗口；Linux 交给网页二维码。"""
+        """扫码登录：SnowLuma 走它自己的面板；NapCat 在 Windows 上拉起桌面窗口。"""
         self._auth(request)
+        proto = self._protocol()
+        if proto["kind"] != "napcat":
+            return _j({
+                "ok": True,
+                "url": proto["webui"],
+                "hint": f"打开 {proto['label']} 面板，在里面用手机 QQ 扫码登录",
+            })
         if os.name != "nt":
             return _j({"ok": True, "url": f"/admin/qr?token={self.token}",
                        "hint": "已打开二维码页面，用手机 QQ 扫一下"})
@@ -828,27 +939,45 @@ setInterval(async()=>{
                             content_type="text/html")
 
     async def h_admin_qr_png(self, request: web.Request) -> web.Response:
-        """把 NapCat 容器里的二维码取出来给页面用。"""
+        """登录二维码（只有 NapCat 会把码落到本地文件；SnowLuma 走面板/桌面扫码）。"""
         self._auth(request)
-        import subprocess
         from pathlib import Path
 
-        out = Path("/tmp/qqbot-qrcode.png")
-        try:
-            subprocess.run(["docker", "cp", "napcat:/app/napcat/cache/qrcode.png", str(out)],
-                           capture_output=True, timeout=20)
-            raw = out.read_bytes()
-        except Exception as exc:
-            log.debug("取二维码失败：%r", exc)
-            raw = b""
+        if not self._protocol()["has_qr"]:
+            return web.Response(status=404, text="no qr")
+        raw = b""
+        for rel in ("napcat/cache/qrcode.png", "napcat/cache/qrcode_big.png", "napcat/qrcode.png"):
+            f = Path(rel)
+            try:
+                if f.exists() and f.stat().st_size > 200:
+                    raw = f.read_bytes()
+                    break
+            except Exception:
+                continue
+        if not raw:
+            import subprocess
+
+            out = Path("/tmp/qqbot-qrcode.png")
+            try:
+                subprocess.run(["docker", "cp", "napcat:/app/napcat/cache/qrcode.png", str(out)],
+                               capture_output=True, timeout=20)
+                raw = out.read_bytes()
+            except Exception as exc:
+                log.debug("取二维码失败：%r", exc)
+                raw = b""
         if not raw:
             return web.Response(status=404, text="no qr")
-        return web.Response(body=raw, content_type="image/jpeg",
+        kind = "image/png" if raw[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+        return web.Response(body=raw, content_type=kind,
                             headers={"Cache-Control": "no-store"})
 
     async def h_admin_qr_refresh(self, request: web.Request) -> web.Response:
-        """重开协议端，换一张新二维码（旧的大约两分钟就过期）。"""
+        """换一张新二维码（旧的大约两分钟就过期）。"""
         self._auth(request)
+        proto = self._protocol()
+        if proto["kind"] != "napcat":
+            return _j({"ok": True, "refresh": False,
+                       "hint": f"{proto['label']} 的扫码在它自己的面板里重新登录，这里不用刷新"})
         import subprocess
 
         try:

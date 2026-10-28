@@ -248,10 +248,18 @@ class Companion:
         llm = self.cfg.get("llm") or {}
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
+        _raw = temperature if temperature is not None else llm.get("temperature")
+        try:
+            _t = float(_raw)
+        except (TypeError, ValueError):
+            _t = 0.95
+        if 2.0 < _t <= 100.0:  # 配置台把 70（=0.7）这种百分数直接写进来了，救一下
+            _t = _t / 100.0
+            log.warning("temperature 配成了 %r，按 %.2f 用（合法范围 0~2）", _raw, _t)
         body = {
             "model": llm.get("model") or "",
             "messages": messages,
-            "temperature": float(temperature if temperature is not None else (llm.get("temperature") or 0.95)),
+            "temperature": max(0.0, min(2.0, _t)),
         }
         # 重复惩罚：真人不会每句都一个腔调，模型会
         if llm.get("presence_penalty") is not None:
@@ -267,6 +275,12 @@ class Companion:
                 data = await r.json(content_type=None)
         except Exception as exc:
             log.error("模型调用失败：%r", exc)
+            return ""
+
+        if not (data.get("choices") if isinstance(data, dict) else None):
+            # 没有 choices 基本就是接口报错（比如 temperature 超出 0~2），
+            # 以前这里静默返回空串，表现就是「机器人不回话」，日志里什么都看不到。
+            log.error("模型返回没有 choices，八成是配置或配额问题：%s", str(data)[:300])
             return ""
 
         ucfg = self.cfg.get("usage") or {}
