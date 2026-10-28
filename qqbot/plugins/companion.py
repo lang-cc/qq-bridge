@@ -1240,7 +1240,7 @@ class Companion:
         answer = self._tighten(answer)   # 压成人话：短句、去客服腔、去旁白
 
         tcfg = self.cfg.get("tts") or {}
-        force_voice = bool(re.search(r"(发个?语音|说句话|语音回|用语音)", text))
+        force_voice = bool(re.search(r"(发[个句条]?语音|来[个句条]?语音|[说讲]句话|语音回|用语音)", text))
         use_voice = bool(answer) and (
             force_voice
             or (
