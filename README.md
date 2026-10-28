@@ -11,9 +11,9 @@
 
 | | **本地（Windows）** | **服务器（Linux / 阿里云）** |
 |---|---|---|
-| 协议端 | **SnowLuma**（注入本机 QQNT 客户端） | **NapCat + Docker**（容器里登录 QQ） |
-| QQ 登录 | 本机 QQ 客户端已登录机器人号 | 手机扫码（NapCat WebUI 6099） |
-| 启动方式 | `boot.py` 拉起 SnowLuma + 服务 | systemd `qqbridge` + `docker run napcat` |
+| 协议端 | **SnowLuma**（注入本机 QQNT 客户端） | **SnowLuma 官方 Docker 镜像**（容器里跑 Linux QQ，原生支持 x64/arm64） |
+| QQ 登录 | 本机 QQ 客户端已登录机器人号 | 网页 noVNC（`6081`）里扫码，WebUI 在 `5099` |
+| 启动方式 | `boot.py` 拉起 SnowLuma + 服务 | `docker run snowluma` + systemd `qqbridge` |
 | 控制台 | `http://127.0.0.1:8088/admin`（桌面图标就是它） | `http://<IP>:8088/admin` 或 SSH 隧道 |
 | 需要 Node.js | 是（语音转 silk） | 是（语音转 silk） |
 
@@ -45,7 +45,7 @@ config.example.yaml  personas.example.yaml  requirements.txt
 - **Node.js 18+**（语音转 silk 必需，`tools/silk/encode.mjs` 用它）
 - `ffmpeg`（语音/音频处理）
 - 一个 OpenAI 兼容的模型接口（DeepSeek / 中转站 / 本地 Ollama 都行；看图功能需要支持图片的模型）
-- 协议端二选一：SnowLuma（Windows）或 NapCat（跨平台，Docker 跑）
+- 协议端：**SnowLuma**（Windows 本机/Qt 注入；Linux 服务器用官方 Docker 镜像，自带 Xvfb + noVNC 扫码）
 
 ---
 
@@ -61,22 +61,28 @@ cd snowluma && .\setup_medium.bat                        # 部署 SnowLuma（需
 cd .. && .\.venv\Scripts\python.exe boot.py              # 启动
 ```
 
-### B. Linux 服务器（NapCat）
+### B. Linux 服务器（SnowLuma 官方 Docker 镜像）
 
 ```bash
-apt update && apt install -y python3 python3-venv python3-pip git ffmpeg nodejs npm
+apt update && apt install -y python3 python3-venv python3-pip git ffmpeg nodejs npm docker.io
 git clone https://github.com/lang-cc/qq-bridge.git /opt/qqbridge && cd /opt/qqbridge
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 cp config.example.yaml config.yaml && cp personas.example.yaml data/personas.yaml
-docker run -d --name napcat --restart unless-stopped --network host \
-  -v /opt/qqbridge/napcat:/app/napcat -e NAPCAT_GID=0 mlikiowa/napcat-docker:latest
+
+# 协议端：容器里带 QQ + Xvfb + noVNC，三个参数不能省
+docker run -d --name snowluma --restart unless-stopped \
+  --shm-size=1g --cap-add=SYS_PTRACE --security-opt seccomp=unconfined \
+  --add-host=host.docker.internal:host-gateway \
+  -p 6081:6081 -p 5099:5099 \
+  -v qq-gateway-data:/app/data -v qq-client-config:/app/.config -v qq-client-data:/app/.local/share \
+  motricseven7/snowluma:latest
+
 .venv/bin/python main_nb.py        # 生产环境用 systemd 托管
 ```
 
-NapCat WebUI（`http://<IP>:6099`）→ 网络配置 → 新增 **WebSocket 反向** → `ws://127.0.0.1:8199/onebot/v11/ws`，
-然后扫码登录机器人 QQ。
-
----
+- **扫码**：浏览器开 `http://<服务器IP>:6081/`（noVNC），密码在 `docker logs snowluma | grep 远程桌面密码`
+- **WebUI**：`http://<服务器IP>:5099/`，临时密码在 `docker logs snowluma | grep 临时密码`
+- WebUI 里新增 **OneBot v11 反向 WebSocket** → `ws://host.docker.internal:8199/onebot/v11/ws`
 
 ## 它能做什么
 
@@ -155,7 +161,7 @@ install.ps1 / 安装.bat  Windows 安装
 语音转 silk 需要 Node.js：`apt install -y nodejs npm`，然后 `.venv/bin/python -c "import qqbot.tts"` 自检。
 
 **扫码后一会儿又掉线？**
-NapCat 登录态和 QQ 版本相关；先在手机上正常登录一次机器人号再扫，并确认内存够（2C4G 起）。
+SnowLuma 的登录态和 QQ 版本相关；先在手机上正常登录一次机器人号再扫，并确认内存够（2C4G 起）。
 
 **语音没声音？**
 语音走 edge-tts（需联网）+ Node 转 silk；缺任一条件会自动退回文字，不影响聊天。
@@ -167,10 +173,10 @@ NapCat 登录态和 QQ 版本相关；先在手机上正常登录一次机器人
 
 ## 注意
 
-- QQ 接入依赖第三方协议端：[NapCatQQ](https://github.com/NapNeko/NapCatQQ)（AGPL-3.0）或 SnowLuma，请遵守其许可与腾讯服务条款。
+- QQ 接入依赖第三方互操作运行时 **SnowLuma**（[文档](https://snowluma.github.io/zh/) / [GitHub](https://github.com/SnowLuma/SnowLuma)），请遵守其许可与腾讯服务条款。
 - 自动化账号存在风控风险，建议用小号，不要批量加好友/群发。
 - 模型按量计费：100 条上下文约 4k tokens/次；对外部署请设日限额。
 
 ## License
 
-MIT（本仓库自有代码）。NapCat / SnowLuma / QQ 客户端遵循各自许可。
+MIT（本仓库自有代码）。SnowLuma / QQ 客户端遵循各自许可。
