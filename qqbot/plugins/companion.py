@@ -315,12 +315,23 @@ class Companion:
         if llm.get("api_key"):
             headers["Authorization"] = f"Bearer {llm['api_key']}"
         url = str(llm.get("base_url") or "").rstrip("/") + "/chat/completions"
-        try:
-            async with self._session.post(url, json=body, headers=headers, timeout=120) as r:
-                data = await r.json(content_type=None)
-        except Exception as exc:
-            log.error("模型调用失败：%r", exc)
-            return ""
+        # 中转站会偶发 503（「Service temporarily unavailable」，0.3 秒就返回），
+        # 以前一次失败就整条回复丢了——表现就是「她突然不回话」。这里补两次短退避重试。
+        data = None
+        for attempt in range(3):
+            try:
+                async with self._session.post(url, json=body, headers=headers, timeout=120) as r:
+                    if r.status >= 500:
+                        raise RuntimeError(f"HTTP {r.status}")
+                    data = await r.json(content_type=None)
+                break
+            except Exception as exc:
+                if attempt >= 2:
+                    log.error("模型调用失败（重试 2 次仍然失败）：%r", exc)
+                    return ""
+                wait = 0.8 * (attempt + 1)
+                log.warning("模型调用失败（第 %d 次）：%r，%.1fs 后重试", attempt + 1, exc, wait)
+                await asyncio.sleep(wait)
 
         if not (data.get("choices") if isinstance(data, dict) else None):
             # 没有 choices 基本就是接口报错（比如 temperature 超出 0~2），
@@ -354,7 +365,8 @@ class Companion:
     # ------------------------------------------------------------ prompt
     HUMAN_RULES = (
         "【怎么说话 —— 硬要求，违反就不像人了】\n"
-        "1. 一次只回一句，一般不超过 12 个字；对方问正经事也不超过 25 个字。\n"
+        "1. 多数时候一句就够，一般不超过 12 个字；对方问正经事也不超过 25 个字。"
+        "真想再补一句就换行另起一条（一次最多两条），别用逗号把两句缝成一句。\n"
         "2. 不解释、不补充、不总结、不列点、不用 markdown，不用引号把整句包起来。\n"
         "3. 禁止客服腔：不许出现「希望」「如果需要」「建议你」「随时告诉我」「有什么可以帮你」"
         "「很高兴」「首先」「其次」「总之」「另外」「总的来说」。\n"
@@ -760,13 +772,35 @@ class Companion:
         await asyncio.sleep((ms + random.uniform(0, float(cfg.get("jitter_ms") or 700))) / 1000)
 
     def _split(self, text: str, limit: int | None = None) -> list[str]:
+        """把一条回复拆成几条，模拟真人连发。
+
+        只按句号切是不够的：HUMAN_RULES 明确要求「短句不点句号收尾」，模型照做之后
+        一条回复里根本没有 。！？，实测 6 条真实回复里 0 条能切开，等于这个功能白写。
+        所以补一条：没有标点但句子够长（超过 soft_limit），就在靠后的空格/逗号处切一刀。
+        """
         cfg = self.cfg.get("split") or {}
         if not cfg.get("enabled"):
             return [text]
         limit = int(limit or cfg.get("max_segments") or 3)
         parts = [p.strip() for p in re.split(r"(?<=[。！？!?…\n])", text) if p.strip()]
+
         if len(parts) <= 1:
-            return [text]
+            soft = int(cfg.get("soft_limit") or 16)
+            body = text.strip()
+            if len(body) <= soft or limit < 2:
+                return [text]
+            # 找靠后的切点：空格 / 逗号 / 顿号，左右各至少留 3 个字
+            cut = -1
+            for m in re.finditer(r"[ 　，,、；;]", body):
+                if m.start() >= 3 and len(body) - m.start() >= 4:
+                    cut = m.start()
+            if cut < 0:
+                return [text]
+            head, tail = body[:cut].strip(), body[cut + 1:].strip()
+            if not head or not tail:
+                return [text]
+            parts = [head, tail]
+
         if len(parts) > limit:
             parts = parts[: limit - 1] + ["".join(parts[limit - 1 :])]
         return parts
@@ -2002,7 +2036,9 @@ class Companion:
             _pid, persona, mem = self._ctx(chat_id)
             if self._sent_today.get(chat_id, 0) >= cap:
                 continue
-            min_gap = float(p.get("min_gap_seconds") or 1200)
+            # 老写法 `or 1200` 会让「配 0 = 不限间隔」变成 1200 秒，配置台里填 0 看着生效其实没生效
+            _mg = p.get("min_gap_seconds")
+            min_gap = float(1200 if _mg is None else _mg)
             if min_gap and time.time() - mem.last_ts(chat_id) < min_gap:
                 continue
 
