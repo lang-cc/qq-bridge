@@ -98,6 +98,11 @@ PAGE = r"""<!doctype html>
   .pill.on .dot{background:var(--ok);box-shadow:0 0 0 3px rgba(16,185,129,.16)}
   .pill.off{color:var(--danger);border-color:rgba(224,75,75,.28);background:#fdecec}
   .pill.off .dot{background:var(--danger)}
+  /* 版本胶囊：灰一点、等宽字体，更新完一眼能看出变没变 */
+  .pill.ver{
+    font-family:ui-monospace,SFMono-Regular,Consolas,"Courier New",monospace;
+    font-size:11.5px;color:var(--dim-2);cursor:help;
+  }
   .spacer{flex:1}
 
   section.tab{display:none;animation:fade .18s ease}
@@ -379,6 +384,7 @@ PAGE = r"""<!doctype html>
       <div class="tb-r">
         <span class="pill" id="pill-conn"><span class="dot"></span><span id="pill-txt">连接中…</span></span>
         <span class="pill" id="pill-acct">账号 —</span>
+        <span class="pill ver" id="pill-ver" title="代码版本：更新后这里会变">v—</span>
         <a class="btn ghost sm" id="napcat-link" href="http://127.0.0.1:5099" target="_blank" rel="noreferrer">协议端面板</a>
         <button class="btn ghost sm" onclick="act('/admin/login','扫码登录')">扫码登录</button>
         <button class="btn ghost sm" onclick="act('/admin/restart','重启服务')">重启</button>
@@ -950,6 +956,17 @@ async function loadStatus() {
     p.className = 'pill ' + (st.connected ? 'on' : 'off');
     $('pill-txt').textContent = st.connected ? '已连接 QQ' : '未连接';
     $('pill-acct').textContent = '账号 ' + (st.self_id || '—');
+    // 版本：更新完先看这里变没变，再去看服务在线
+    if (st.version && $('pill-ver')) {
+      const v = st.version;
+      $('pill-ver').textContent = v.label || ('v' + (v.version || '—'));
+      $('pill-ver').title = ['代码版本 v' + (v.version || '—'),
+        v.commit ? ('提交 ' + (v.ref || 'main') + '@' + v.commit) : '',
+        v.source ? ('来源 ' + v.source) : '',
+        v.time ? ('时间 ' + v.time) : '',
+        '', '更新完重启服务，这里的提交号会变'
+      ].filter(Boolean).join('\n');
+    }
     $('st-conn').className = 'stat ' + (st.connected ? 'ok' : 'bad');
     $('st-conn').querySelector('b').textContent = st.connected ? '正常' : '断开';
     $('st-acct').textContent = st.self_id || '—';

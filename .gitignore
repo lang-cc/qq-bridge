@@ -66,3 +66,15 @@ data/sticker_trash/
 
 # 运行时二进制（部署时由 setup 脚本下载，别进仓库）
 snowluma/node.exe
+
+# 本地虚拟环境标记
+.dsh-pyenv/
+
+# 版本标记：更新脚本 / 打包脚本每次现写，各台机器各不相同，不进仓库
+VERSION.txt
+
+# 部署文档不进公开仓库（远程代装时单独发给对方电脑）
+docs/
+交付说明*.md
+任务单*.md
+DeepSeek-Harness*.md

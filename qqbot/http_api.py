@@ -22,6 +22,7 @@ from typing import Any
 from aiohttp import web
 
 from . import message as msg
+from . import version as app_version
 
 log = logging.getLogger("qqbot.http_api")
 
@@ -183,15 +184,18 @@ class HttpApi:
 
     async def h_status(self, request: web.Request) -> web.Response:
         # /status 不鉴权：看门狗、自检、部署脚本都要用它探活（只返回在线信息，不含敏感内容）
-        return _j(
-            {
-                "ok": True,
-                "adapter": self.bot.adapter.name,
-                "self_id": self.bot.self_id,
-                "connected": getattr(self.bot.adapter, "_ws", None) is not None,
-                "plugins": len(self.bot.router.handlers),
-            }
-        )
+        data: dict[str, Any] = {
+            "ok": True,
+            "adapter": self.bot.adapter.name,
+            "self_id": self.bot.self_id,
+            "connected": getattr(self.bot.adapter, "_ws", None) is not None,
+            "plugins": len(self.bot.router.handlers),
+        }
+        try:  # 版本号一起吐出来：更新完对一下就知道新代码生效没
+            data["version"] = app_version.info()
+        except Exception:  # 版本读不出来不能影响探活
+            pass
+        return _j(data)
 
     async def h_send(self, request: web.Request) -> web.Response:
         """通用接口：message 可以是字符串，也可以是消息段数组。"""
