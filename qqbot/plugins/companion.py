@@ -318,7 +318,7 @@ class Companion:
         # 中转站会偶发 503（「Service temporarily unavailable」，0.3 秒就返回），
         # 以前一次失败就整条回复丢了——表现就是「她突然不回话」。这里补两次短退避重试。
         data = None
-        for attempt in range(3):
+        for attempt in range(4):
             try:
                 async with self._session.post(url, json=body, headers=headers, timeout=120) as r:
                     if r.status >= 500:
@@ -326,8 +326,8 @@ class Companion:
                     data = await r.json(content_type=None)
                 break
             except Exception as exc:
-                if attempt >= 2:
-                    log.error("模型调用失败（重试 2 次仍然失败）：%r", exc)
+                if attempt >= 3:
+                    log.error("模型调用失败（重试 3 次仍然失败）：%r", exc)
                     return ""
                 wait = 0.8 * (attempt + 1)
                 log.warning("模型调用失败（第 %d 次）：%r，%.1fs 后重试", attempt + 1, exc, wait)
@@ -785,7 +785,7 @@ class Companion:
         parts = [p.strip() for p in re.split(r"(?<=[。！？!?…\n])", text) if p.strip()]
 
         if len(parts) <= 1:
-            soft = int(cfg.get("soft_limit") or 16)
+            soft = int(cfg.get("soft_limit") or 11)
             body = text.strip()
             if len(body) <= soft or limit < 2:
                 return [text]

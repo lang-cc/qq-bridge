@@ -46,6 +46,7 @@ autoreply:
   split:
     enabled: true
     max_segments: 2
+    soft_limit: 11
     gap_ms:
     - 700
     - 1800
