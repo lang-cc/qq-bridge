@@ -151,6 +151,20 @@ revise 只在**你确实松口、让步、被说服或改主意**时才写（比
 特别注意：相处久了人会有变化，别把立场写死。"""
 
 
+def _json_of(raw: str) -> dict:
+    """从模型输出里抠 JSON：```json 代码块、前缀废话、尾随说明都要能容忍。"""
+    if not raw:
+        return {}
+    m = re.search(r"\{.*\}", raw, re.S)
+    if not m:
+        return {}
+    try:
+        d = json.loads(m.group(0))
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
 def _merge(base: dict, override: dict) -> dict:
     out = dict(base)
     for k, v in (override or {}).items():
@@ -265,6 +279,7 @@ class Companion:
         kind: str = "reply",
         persona: str = "",
         chat_id: str = "",
+        extra: dict | None = None,
     ) -> str:
         import aiohttp
 
@@ -289,6 +304,13 @@ class Companion:
             body["presence_penalty"] = float(llm["presence_penalty"])
         if llm.get("frequency_penalty") is not None:
             body["frequency_penalty"] = float(llm["frequency_penalty"])
+        if llm.get("max_tokens"):
+            try:
+                body["max_tokens"] = int(llm["max_tokens"])
+            except (TypeError, ValueError):
+                pass
+        if extra:
+            body.update(extra)
         headers = {"Content-Type": "application/json"}
         if llm.get("api_key"):
             headers["Authorization"] = f"Bearer {llm['api_key']}"
@@ -320,7 +342,14 @@ class Companion:
         except Exception as exc:
             log.debug("用量记录失败：%r", exc)
 
-        return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        choice = (data.get("choices") or [{}])[0]
+        text = (((choice.get("message") or {}).get("content")) or "").strip()
+        if not text and choice.get("finish_reason") == "length":
+            # 推理型模型（如 deepseek-v4-pro）会先把 token 花在思考上，正文一个字都吐不出来。
+            # 调用方拿到空串会当成「模型没说话」，所以必须留痕，不然查都没处查。
+            log.warning("模型正文为空且被截断（finish_reason=length）：多半是思考把 token 用光了，"
+                        "调大 llm.max_tokens 或换非推理档")
+        return text
 
     # ------------------------------------------------------------ prompt
     HUMAN_RULES = (
@@ -1089,23 +1118,25 @@ class Companion:
 
     # ------------------------------------------------------------ 复盘
     async def _reflect_chunk(self, convo: str) -> dict:
-        """一次复盘调用。这类型号忽略 system，指令必须塞进 user 消息，否则它会当成聊天继续演。"""
-        raw = await self._chat(
-            [
-                {"role": "system", "content": "你是一个只输出 JSON 的分析器。"},
-                {"role": "user", "content":
-                    "【分析任务，不是聊天，不要角色扮演，不要安慰我，只输出 JSON】\n"
-                    + REFLECT_PROMPT + "\n\n对话记录：\n" + convo},
-            ],
-            temperature=0.3,
-        )
-        m = re.search(r"\{.*\}", raw, re.S)
-        if not m:
-            return {}
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            return {}
+        """一次复盘调用。这类型号忽略 system，指令必须塞进 user 消息，否则它会当成聊天继续演。
+
+        推理型模型（deepseek-v4-pro）实测会把 token 先花在思考上，正文可能一个字都没有；
+        加上 response_format=json_object 之后就稳了。所以这里跑两轮：
+        先要 JSON 模式，拿到空/解析失败再退回普通模式重试一次。
+        """
+        msgs = [
+            {"role": "system", "content": "你是一个只输出 JSON 的分析器。"},
+            {"role": "user", "content":
+                "【分析任务，不是聊天，不要角色扮演，不要安慰我，只输出 JSON】\n"
+                + REFLECT_PROMPT + "\n\n对话记录：\n" + convo},
+        ]
+        for extra in ({"response_format": {"type": "json_object"}}, None):
+            raw = await self._chat(msgs, temperature=0.3, kind="reflect", extra=extra)
+            d = _json_of(raw)
+            if d:
+                return d
+        log.info("复盘这一块没拿到 JSON，跳过（下一轮再算）")
+        return {}
 
     async def _reflect(self, chat_id: str) -> None:
         """复盘入口：同一会话只允许一个复盘在跑。

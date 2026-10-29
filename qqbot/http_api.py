@@ -820,20 +820,24 @@ class HttpApi:
 
     @staticmethod
     def _memory_files() -> list[tuple[str, Any]]:
-        """找出所有记忆库：(人格 id, 路径)。新版每人格一个库，老版是 data/memory.db。"""
+        """找出所有记忆库：(人格 id, 路径)。新版每人格一个库，老版是 data/memory.db。
+
+        顺序：人格库在前，老的单库放最后。以前 legacy 排第一，导致「不指定人格」
+        时先去老库里找会话，找到个空壳就返回了（页面上看着像「什么都没记住」）。
+        """
         from pathlib import Path
 
         out: list[tuple[str, Path]] = []
         base = Path("data")
-        legacy = base / "memory.db"
-        if legacy.exists():
-            out.append(("", legacy))
         pdir = base / "personas"
         if pdir.is_dir():
             for sub in sorted(pdir.iterdir()):
                 db = sub / "memory.db"
                 if db.is_file():
                     out.append((sub.name, db))
+        legacy = base / "memory.db"
+        if legacy.exists():
+            out.append(("", legacy))
         return out
 
     async def h_admin_memory(self, request: web.Request) -> web.Response:
@@ -863,20 +867,32 @@ class HttpApi:
                     g["personas"].sort(key=lambda x: x["count"], reverse=True)
                 return _j({"ok": True, "chats": chats})
 
+            # 老库里的人格 id 是空串，跟「没指定人格」长得一模一样：
+            # 以前 `pid == persona` 会立刻命中老库，页面就显示「一条都没记住」。
+            if not persona:
+                try:
+                    from .plugins.companion import ENGINE as _eng
+                    if _eng is not None:
+                        persona = _eng.store.chat_persona(chat) or ""
+                except Exception:
+                    persona = ""
             target = files[0][1]
-            target_pid = persona or files[0][0]
-            for pid, path in files:
-                if pid == persona:
-                    target = path
-                    target_pid = pid
-                    break
-            else:
-                for _pid, path in files:  # 没指定人格就找哪个库里有这个会话
-                    mem = Memory(str(path))
-                    if mem.message_count(chat) > 0:
-                        target = path
-                        target_pid = _pid
+            target_pid = files[0][0]
+            hit = False
+            if persona:
+                for pid, path in files:
+                    if pid == persona:
+                        target, target_pid, hit = path, pid, True
                         break
+            if not hit:
+                # 还不知道是谁的会话：挑「这个会话消息最多」的那个库
+                best, best_n = None, 0
+                for _pid, path in files:
+                    n = Memory(str(path)).message_count(chat)
+                    if n > best_n:
+                        best, best_n = (_pid, path), n
+                if best:
+                    target_pid, target = best[0], best[1]
             mem = Memory(str(target))
             recent = mem.recent(chat, limit=40)
             now = time.time()
