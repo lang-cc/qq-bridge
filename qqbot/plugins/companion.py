@@ -1612,7 +1612,9 @@ class Companion:
                                 "content": self._reminder(persona, grow_brief + inner_hint + front, self._style_of(persona)) + str(messages[-1].get("content") or "")}
 
         # 「做个图」：现场拼一张给她
-        if re.search(r"(做个?图|做张?图|发张?图|发个图|梗图|把.{0,14}做成图)", text):
+        # 「给我画个画」「画一张猫」也要认，以前只认「做个图」，说要画画她只回「嗯老大」
+        if re.search(r"(做个?图|做张?图|发张?图|发个图|来张?图|搞张?图|梗图"
+                     r"|画[个张幅一]|画一[张个幅]|给我画|把.{0,14}做成图)", text):
             if await self._send_made_image(event, chat_id, text):
                 mem.add_message(chat_id, "assistant", "[自己做了张图发过去]")
                 return True
