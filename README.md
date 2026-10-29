@@ -84,6 +84,18 @@ docker run -d --name snowluma --restart unless-stopped \
 - **WebUI**：`http://<服务器IP>:5099/`，临时密码在 `docker logs snowluma | grep 临时密码`
 - WebUI 里新增 **OneBot v11 反向 WebSocket** → `ws://host.docker.internal:8199/onebot/v11/ws`
 
+## 更新到新版本
+
+更新只换代码，配置 / 密钥 / 记忆 / 协议端 / 表情包 / 虚拟环境全都不动，**不用重新扫码**。
+
+- **Windows**：双击安装目录里的 `更新.bat`（= `scripts\update.ps1`）→ 自动下载最新代码、备份旧代码到 `backups\`、覆盖代码、跑自检 → 到后台概览页点「重启」。
+  远程无人值守：`powershell -ExecutionPolicy Bypass -File scripts\update.ps1 -NoPause`
+- **Linux 服务器**：`git pull && .venv/bin/pip install -r requirements.txt && systemctl restart qqbridge`
+- **确认生效**：后台顶栏右侧的版本小字（`v0.2.0 · main@提交号 · 更新于 …`），提交号或时间变了就是新版；`/status` 接口里也有同样的 `version` 字段。
+- **回滚**：把 `backups\code-before-update-<时间>.zip` 解压覆盖回安装目录，再重启。
+
+更新源是 GitHub `main` 分支；官方源太慢时会自动换加速镜像。
+
 ## 它能做什么
 
 | 能力 | 说明 |
