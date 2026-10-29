@@ -78,6 +78,51 @@ def should_skip(chance: float) -> bool:
     return chance > 0 and random.random() < chance
 
 
+MISREAD_TEXT = {
+    "ask_word": (
+        "【这轮你没听明白】他这句话里可能有你不熟的词、缩写或者梗。"
+        "别装懂、别硬接、别长篇解释，直接问一句（「啊？啥意思」「没懂 再说一遍」），"
+        "一句话就行，别客套，也别把他原话重复一遍。"
+    ),
+    "half": (
+        "【这轮你只懂了一半】你没完全抓住他这句的重点，可能理解偏了。"
+        "就按你自己的理解回，可以猜错，不用求全对，也不用反问他到底什么意思 —— "
+        "答歪了再被他纠正，这才是真的在聊。"
+    ),
+}
+
+MISREAD_BRIEF = {
+    "ask_word": "（这轮你没听清他说的那个词，问一句啥意思就行）",
+    "half": "（这轮你只听懂一半，按你自己的理解答，可以答歪）",
+}
+
+
+def misread_pick(chance: float, ask_word_chance: float) -> str:
+    """掷一次：这轮是「没听明白」还是「只懂一半」，还是正常发挥（空串）。
+
+    为什么要有这个：永远答得又快又准是最假的一点。真会理解偏、会问「啥意思」、会被纠正。
+    概率要小 —— 高了就从「可爱」变「蠢」。
+    """
+    ask_word_chance = max(0.0, min(1.0, float(ask_word_chance or 0)))
+    chance = max(0.0, min(1.0, float(chance or 0)))
+    r = random.random()
+    if r < ask_word_chance:
+        return "ask_word"
+    if r < ask_word_chance + chance:
+        return "half"
+    return ""
+
+
+def misread_text(kind: str, brief: bool = False) -> str:
+    table = MISREAD_BRIEF if brief else MISREAD_TEXT
+    return table.get(str(kind or ""), "")
+
+
+def misread_hint(chance: float, ask_word_chance: float) -> str:
+    """兼容旧签名：掷一次直接拿到长文本。"""
+    return misread_text(misread_pick(chance, ask_word_chance))
+
+
 def split_two(text: str) -> list[str]:
     """在最后一个停顿处拆成两条，两半都要够长，否则不拆。"""
     t = (text or "").strip()

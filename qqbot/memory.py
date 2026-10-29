@@ -61,6 +61,20 @@ CREATE TABLE IF NOT EXISTS kv (
     ts REAL NOT NULL,
     PRIMARY KEY (chat_id, key)
 );
+
+-- 悬案：他说过、但还没结果的事（面试/体检/等他回话…）。到点了她该问一句。
+CREATE TABLE IF NOT EXISTS loop (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id TEXT NOT NULL,
+    thing TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    due_at REAL NOT NULL,
+    created_at REAL NOT NULL,
+    asked_n INTEGER NOT NULL DEFAULT 0,
+    last_asked REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open'
+);
+CREATE INDEX IF NOT EXISTS idx_loop_due ON loop(chat_id, status, due_at);
 """
 
 
@@ -280,6 +294,103 @@ class Memory:
             n += max(0, cur.rowcount or 0)
         self._conn.commit()
         return n
+
+    # ---------------------------------------------------------- 悬案
+    # 真人最像人的动作之一：正聊着别的，突然问一句「对了你那个面试咋样了」。
+    # 所以要把「他说过、但还没结果的事」单独存一张表，到点了由主动消息去问。
+    @staticmethod
+    def _loop_row(r: Any) -> dict:
+        return {
+            "id": int(r["id"]),
+            "thing": r["thing"],
+            "detail": r["detail"] or "",
+            "due_at": float(r["due_at"]),
+            "created_at": float(r["created_at"]),
+            "asked_n": int(r["asked_n"]),
+            "last_asked": float(r["last_asked"]),
+            "status": r["status"],
+        }
+
+    def loop_add(self, chat_id: str, thing: str, detail: str = "", due_at: float = 0.0) -> int:
+        """登记一件悬案。同一件事还开着就只更新，不重复记（模型每轮都会重复报同一件事）。"""
+        thing = str(thing or "").strip()[:40]
+        if len(thing) < 2:
+            return 0
+        now = time.time()
+        due_at = float(due_at or 0) or (now + 2 * 86400)
+        rows = self._conn.execute(
+            "SELECT id, thing FROM loop WHERE chat_id=? AND status='open'", (chat_id,)
+        ).fetchall()
+        for r in rows:
+            a, b = str(r["thing"]), thing
+            if a == b or (len(a) >= 2 and (a in b or b in a)):
+                self._conn.execute(
+                    "UPDATE loop SET detail=?, due_at=?, status='open' WHERE id=?",
+                    (str(detail or "")[:120], due_at, int(r["id"])),
+                )
+                self._conn.commit()
+                return int(r["id"])
+        cur = self._conn.execute(
+            "INSERT INTO loop(chat_id, thing, detail, due_at, created_at, status) VALUES(?,?,?,?,?,'open')",
+            (chat_id, thing, str(detail or "")[:120], due_at, now),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid or 0)
+
+    def loop_due(self, chat_id: str, now: float | None = None, max_ask: int = 3) -> dict | None:
+        """最早到期、还没问够次数的一件。"""
+        now = now or time.time()
+        row = self._conn.execute(
+            "SELECT * FROM loop WHERE chat_id=? AND status='open' AND due_at<=? AND asked_n<? "
+            "ORDER BY due_at ASC LIMIT 1",
+            (chat_id, now, int(max_ask)),
+        ).fetchone()
+        return self._loop_row(row) if row else None
+
+    def loop_open(self, chat_id: str, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM loop WHERE chat_id=? AND status='open' ORDER BY due_at ASC LIMIT ?",
+            (chat_id, int(limit)),
+        ).fetchall()
+        return [self._loop_row(r) for r in rows]
+
+    def loop_touch(self, loop_id: int, now: float | None = None) -> None:
+        """问过一次：次数 +1，并把下一次推迟（免得连着追问同一个话题）。"""
+        now = now or time.time()
+        self._conn.execute(
+            "UPDATE loop SET asked_n = asked_n + 1, last_asked=?, due_at=? WHERE id=?",
+            (now, now + 2 * 86400, int(loop_id)),
+        )
+        self._conn.commit()
+
+    def loop_close(self, chat_id: str, thing: str = "", loop_id: int = 0, status: str = "done") -> int:
+        """这件悬案有结果了（问到结果了 / 他自己说了 / 过期了）。"""
+        if loop_id:
+            cur = self._conn.execute("UPDATE loop SET status=? WHERE id=?", (status, int(loop_id)))
+            self._conn.commit()
+            return max(0, cur.rowcount or 0)
+        thing = str(thing or "").strip()
+        if len(thing) < 2:
+            return 0
+        n = 0
+        for r in self._conn.execute(
+            "SELECT id, thing FROM loop WHERE chat_id=? AND status='open'", (chat_id,)
+        ).fetchall():
+            a, b = str(r["thing"]), thing
+            if a == b or (len(a) >= 2 and (a in b or b in a)):
+                cur = self._conn.execute("UPDATE loop SET status=? WHERE id=?", (status, int(r["id"])))
+                n += max(0, cur.rowcount or 0)
+        self._conn.commit()
+        return n
+
+    def loop_prune(self, drop_days: float = 45) -> int:
+        """太老的悬案直接丢掉：隔两个月再问「上次那个面试咋样了」很怪。"""
+        cutoff = time.time() - float(drop_days) * 86400
+        cur = self._conn.execute(
+            "DELETE FROM loop WHERE status!='open' OR created_at < ?", (cutoff,)
+        )
+        self._conn.commit()
+        return max(0, cur.rowcount or 0)
 
     def prune(self, retain_days: float) -> int:
         """删掉超过保留期的普通消息；keep=1 的一律不动。"""

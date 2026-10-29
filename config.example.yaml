@@ -146,6 +146,22 @@ autoreply:
   grudge:
     enabled: true
     hours: 10
+  # 悬案：你说过还没结果的事（面试/体检/等他回话），过一两天她会自己来问一句
+  loops:
+    enabled: true
+    max_ask: 3
+    drop_days: 45
+    max_prompt: 2
+    min_hours: 6
+  # 会没听懂：偶尔理解偏，或者直接问「啥意思」—— 永远秒懂最假
+  misread:
+    enabled: true
+    chance: 0.1
+    ask_word_chance: 0.06
+  # 生活细节：固定的城市/店名/室友/猫，跨天一致（fixed 里写的会覆盖自动生成）
+  world:
+    enabled: true
+    fixed: {}
   playful:
     enabled: true
     typo_chance: 0.05

@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sys
+import time
 from typing import Any
 
 from aiohttp import web
@@ -863,18 +864,40 @@ class HttpApi:
                 return _j({"ok": True, "chats": chats})
 
             target = files[0][1]
+            target_pid = persona or files[0][0]
             for pid, path in files:
                 if pid == persona:
                     target = path
+                    target_pid = pid
                     break
             else:
                 for _pid, path in files:  # 没指定人格就找哪个库里有这个会话
                     mem = Memory(str(path))
                     if mem.message_count(chat) > 0:
                         target = path
+                        target_pid = _pid
                         break
             mem = Memory(str(target))
             recent = mem.recent(chat, limit=40)
+            now = time.time()
+            try:
+                loops = [
+                    {
+                        "thing": x["thing"],
+                        "detail": x["detail"],
+                        "due_in_hours": round((x["due_at"] - now) / 3600.0, 1),
+                        "asked_n": x["asked_n"],
+                    }
+                    for x in mem.loop_open(chat, 20)
+                ]
+            except Exception:
+                loops = []
+            try:
+                world = json.loads(mem.kv_get("__persona__", "world:%s" % target_pid, "") or "{}")
+                if not isinstance(world, dict):
+                    world = {}
+            except Exception:
+                world = {}
             return _j({
                 "ok": True,
                 "persona": persona,
@@ -882,6 +905,8 @@ class HttpApi:
                 "count": mem.message_count(chat),
                 "summary": mem.get_summary(chat) or "",
                 "facts": mem.facts(chat) or {},
+                "loops": loops,
+                "world": world,
                 "recent": [{"role": m.get("role"), "content": m.get("content")} for m in recent],
             })
         except Exception as exc:

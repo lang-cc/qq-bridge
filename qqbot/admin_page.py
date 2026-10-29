@@ -1317,11 +1317,22 @@ async function showMem(c) {
   const facts = Object.entries(d.facts || {});
   const bubs = (d.recent || []).map(m =>
     `<div class="bub ${m.role === 'user' ? 'me' : 'her'}">${esc(m.content || '')}</div>`).join('');
+  const loops = d.loops || [];
+  const loopChips = loops.length ? loops.map(x => {
+    const h = Number(x.due_in_hours || 0);
+    const when = h <= 0 ? '该问了' : (h >= 48 ? Math.round(h / 24) + ' 天后问' : Math.max(1, Math.round(h)) + ' 小时后问');
+    return `<span class="chip">${esc(x.thing)}${x.detail ? '：' + esc(x.detail) : ''} · ${when}${x.asked_n ? ' · 问过 ' + x.asked_n + ' 次' : ''}</span>`;
+  }).join('') : '<span class="chip">（没有挂心的事）</span>';
+  const WLABEL = { city: '城市', area: '区', home: '住处', shop: '上班', boss: '店里', roomie: '室友', pet: '宠物', phone: '手机', food: '常吃' };
+  const wchips = Object.entries(d.world || {}).map(([k, v]) => `<span class="chip">${esc(WLABEL[k] || k)}：${esc(v)}</span>`).join('');
   $('memdetail').innerHTML = `
     <div class="hint">${esc(d.chat)} · ${d.count} 条消息${c.persona ? ' · 人格 ' + esc(c.persona) : ''}</div>
     ${d.summary ? `<div class="block-title">阶段性总结</div><div class="out">${esc(d.summary)}</div>` : ''}
     <div class="block-title">记住的事</div>
     <div class="chips">${facts.length ? facts.map(([k, v]) => `<span class="chip">${esc(k)}：${esc(v)}</span>`).join('') : '<span class="chip">（还没记住什么）</span>'}</div>
+    <div class="block-title">她惦记着的事（到点会自己来问）</div>
+    <div class="chips">${loopChips}</div>
+    ${wchips ? `<div class="block-title">她生活里的细节（跨天不变）</div><div class="chips">${wchips}</div>` : ''}
     <div class="block-title">最近对话</div>
     <div class="bubbles">${bubs || '<div class="hint">（没有记录）</div>'}</div>`;
 }

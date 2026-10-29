@@ -22,10 +22,12 @@ from .. import growth as growth_mod
 from .. import life as life_mod
 from .. import catchup as catchup_mod
 from .. import humanlike
+from .. import loops as loops_mod
 from .. import mood as mood_mod
 from .. import selfhood as selfhood_mod
 from .. import wander as wander_mod
 from .. import web_tools
+from .. import world as world_mod
 from ..api_result import unwrap
 from ..message import at as seg_at
 from ..message import face as seg_face
@@ -96,6 +98,18 @@ DEFAULTS = {
     "grudge": {"enabled": True, "hours": 10},
     "diary": {"enabled": True, "diary_hour": 23},
     "douyin": {"enabled": True},
+    # 悬案：他说过还没结果的事（面试/体检/等他回话），到点了她会自己追问
+    "loops": {
+        "enabled": True,
+        "max_ask": 3,
+        "drop_days": 45,
+        "max_prompt": 2,
+        "min_hours": 6,
+    },
+    # 会误解：偶尔没听懂/理解偏/直接问「啥意思」—— 永远秒懂最假
+    "misread": {"enabled": True, "chance": 0.10, "ask_word_chance": 0.06},
+    # 生活细节：具体、跨天不变的地名/店名/室友/猫
+    "world": {"enabled": True, "fixed": {}},
     "proactive": {
         "enabled": False,
         "targets": [],
@@ -125,10 +139,14 @@ PROACTIVE_INTENTS = (
 )
 
 REFLECT_PROMPT = """下面是你和对方的最近对话。请总结并只输出 JSON（不要代码块、不要解释）：
-{"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定；群聊里外号写成「群梗·某某」，大家最近在说的梗写成「群梗·关键词」"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"], "self": {"opinions": ["这几轮里你明确表达过的一个看法，第一人称、20字内"], "habits": ["你最近的状态或习惯，如「连着三晚两点睡」，20字内"], "voice": ["你嘴上常挂的一个词或语气，如「行吧」「烦死了」"], "self": ["你对自己的一句认知，如「我嘴硬心软」"]}, "selfhood": {"goal": "你最近想做的一件事，第一人称、20字内", "desire": "你现在憋着想跟他说、还没说出口的一句，20字内", "ask": "你想跟他提的一个要求（让他陪你/帮你/别烦你），20字内", "avoid": "你现在不太想聊的一件事，20字内", "inner": "你此刻脑子里的一句，15字内"}, "revise": [{"from": "你以前坚持过的一条看法原文", "to": "这轮你被说服后改成的新说法"}]}
+{"summary": "你们关系与近况的一句话概述，80字内", "facts": {"键": "要长期记住的事，如昵称/职业/喜好/约定；群聊里外号写成「群梗·某某」，大家最近在说的梗写成「群梗·关键词」"}, "traits": {"幽默": 0.6, "黏人": 0.3, "话多": 0.4, "丧": 0.2}, "important": ["必须永久记住的原话要点，最多3条"], "self": {"opinions": ["这几轮里你明确表达过的一个看法，第一人称、20字内"], "habits": ["你最近的状态或习惯，如「连着三晚两点睡」，20字内"], "voice": ["你嘴上常挂的一个词或语气，如「行吧」「烦死了」"], "self": ["你对自己的一句认知，如「我嘴硬心软」"]}, "selfhood": {"goal": "你最近想做的一件事，第一人称、20字内", "desire": "你现在憋着想跟他说、还没说出口的一句，20字内", "ask": "你想跟他提的一个要求（让他陪你/帮你/别烦你），20字内", "avoid": "你现在不太想聊的一件事，20字内", "inner": "你此刻脑子里的一句，15字内"}, "loops": [{"thing": "面试", "detail": "周五下午二面，他有点慌", "due_days": 3}], "loops_done": ["体检"], "revise": [{"from": "你以前坚持过的一条看法原文", "to": "这轮你被说服后改成的新说法"}]}
 traits 取 0-1，表示你目前的性格倾向。important 只放真正重要的事（约定、家人、健康、重要日期、矛盾与和解），没有就给空数组。
 self 是你自己的变化，只写这次对话里**新出现**的，没有就给空数组，不要硬凑、不要重复以前的。
 selfhood 只写这次对话里冒出、而且**还没说出口**的；没有就留空字符串，别编。
+loops 是他提过、但**还没结果**的事：要去办的事、要等的结果、约好的事（面试/体检/考试/发工资/见家长/搬家/等消息）。
+thing 只写 2-6 个字的名词短语（「面试」「体检报告」「他妈生日」），detail 写你记得的细节（20字内），
+due_days 是「过几天问合适」（0.2 到 30 之间，拿不准就给 2）。他随口一说、没有下落的情绪抱怨不要写进来。
+loops_done 是这次对话里**已经有结果**的事（他说考完了/去过了/没戏了/不用去了），只写 loops 里那几个字；没有给空数组。
 revise 只在**你确实松口、让步、被说服或改主意**时才写（比如本来死活不肯的，这轮愿意了）；没改变就给空数组。
 特别注意：相处久了人会有变化，别把立场写死。"""
 
@@ -598,6 +616,23 @@ class Companion:
                 extra.append(wtxt)
         except Exception as exc:
             log.debug("瞎逛内容注入失败：%r", exc)
+        # 生活里的具体细节：城市/店名/室友/猫。跨天不变，不提就是废话
+        if self.fe("world"):
+            try:
+                wd = world_mod.load(mem, pid, self.cfg.get("world"))
+                ltxt = world_mod.describe(wd, self.cfg.get("world"))
+                if ltxt:
+                    extra.append(ltxt)
+            except Exception as exc:
+                log.debug("生活细节注入失败：%r", exc)
+        # 她心里惦记着、还没问出结果的事（悬案）
+        if self.fe("loops"):
+            try:
+                ltxt2 = loops_mod.describe(mem, chat_id, self.cfg.get("loops"))
+                if ltxt2:
+                    extra.append(ltxt2)
+            except Exception as exc:
+                log.debug("悬案注入失败：%r", exc)
         if self.fe("memory"):
             summary = mem.get_summary(chat_id)
             facts = mem.facts(chat_id)
@@ -1108,7 +1143,8 @@ class Companion:
         # 太长就分块复盘（每块 8000 字，最多 4 块），结果合并，别漏掉前面聊的
         step = 8000
         chunks = [convo[i:i + step] for i in range(0, len(convo), step)][:4] or [convo]
-        merged: dict = {"facts": {}, "important": [], "traits": {}, "self": {}, "selfhood": {}, "revise": []}
+        merged: dict = {"facts": {}, "important": [], "traits": {}, "self": {}, "selfhood": {}, "revise": [],
+                        "loops": [], "loops_done": []}
         for c in chunks:
             d = await self._reflect_chunk(c)
             if not d:
@@ -1129,8 +1165,11 @@ class Companion:
             if isinstance(sd, dict):
                 merged["selfhood"].update({k: v for k, v in sd.items() if isinstance(v, str) and v.strip()})
             merged["revise"] += [x for x in (d.get("revise") or []) if isinstance(x, dict)]
+            merged["loops"] += [x for x in (d.get("loops") or []) if isinstance(x, dict)]
+            merged["loops_done"] += [str(x) for x in (d.get("loops_done") or []) if str(x).strip()]
         data = merged
-        if not data.get("summary") and not data.get("facts") and not data.get("self"):
+        if (not data.get("summary") and not data.get("facts") and not data.get("self")
+                and not data.get("loops")):
             return
         if data.get("summary"):
             mem.set_summary(chat_id, str(data["summary"])[:400])
@@ -1149,6 +1188,11 @@ class Companion:
             selfhood_mod.absorb(mem, chat_id, data.get("selfhood") or {})
         except Exception as exc:
             log.warning("自我意识写入失败：%r", exc)
+        # 悬案：他说过、还没结果的事 —— 以后她自己会想起来问
+        try:
+            loops_mod.absorb(mem, chat_id, data.get("loops"), data.get("loops_done"), self.cfg.get("loops"))
+        except Exception as exc:
+            log.warning("悬案写入失败：%r", exc)
         mem.reset_counter(chat_id)
         # 游标：记住这次复盘读到第几条，下次只统计它之后新增的消息。
         # 计数器会被并发回合覆盖，游标不会 —— 这才是「聊满 N 条才复盘一次」的正确实现。
@@ -1446,6 +1490,16 @@ class Companion:
                 "【主动】如果他的话本身没什么可接的，可以在末尾顺手问他一件小事"
                 "（今天干嘛了/吃了没/几点睡），只问一件；他正在问你要东西时别岔开。"
             )
+        # 会误解：偶尔没听懂 / 只懂一半 / 直接问「啥意思」—— 永远秒懂最假
+        mis_kind = ""
+        if not angry and self.fe("misread"):
+            mcfg = self.cfg.get("misread") or {}
+            mis_kind = humanlike.misread_pick(
+                float(mcfg.get("chance") or 0), float(mcfg.get("ask_word_chance") or 0)
+            )
+            if mis_kind:
+                blocks.append(humanlike.misread_text(mis_kind))
+                log.info("[没听懂:%s] %s", mis_kind, text[:20])
         messages.append({"role": "system", "content": "\n".join(blocks)})
 
         # 该轮到她说自己的事了：每 N 轮硬提醒一次，不然模型只会被动接话
@@ -1479,8 +1533,18 @@ class Companion:
                     inner_hint = selfhood_mod.hint(mem, chat_id) + own_line
                 except Exception:
                     inner_hint = ""
+                # 生活细节和「没听懂」必须也进这条句前提醒：flash 这类型号基本不读
+                # system（实测问「你在哪上班」它答「我是 AI 助手」），只在 system 里写等于没写
+                front = ""
+                if self.fe("world"):
+                    try:
+                        front += world_mod.brief(world_mod.load(mem, pid, self.cfg.get("world")), self.cfg.get("world"))
+                    except Exception as exc:
+                        log.debug("生活细节提醒注入失败：%r", exc)
+                if mis_kind:
+                    front += humanlike.misread_text(mis_kind, brief=True)
                 messages[-1] = {"role": "user",
-                                "content": self._reminder(persona, grow_brief + inner_hint, self._style_of(persona)) + str(messages[-1].get("content") or "")}
+                                "content": self._reminder(persona, grow_brief + inner_hint + front, self._style_of(persona)) + str(messages[-1].get("content") or "")}
 
         # 「做个图」：现场拼一张给她
         if re.search(r"(做个?图|做张?图|发张?图|发个图|梗图|把.{0,14}做成图)", text):
@@ -1927,6 +1991,15 @@ class Companion:
                     if wline:
                         context = (context + "\n" if context else "") + "今天天气：" + wline
 
+            # 悬案优先：到点了先问他自己那件事 —— 比分享链接值钱得多，
+            # 一句「对了你那个面试咋样了」就能证明她真的在惦记他的事
+            lp = None
+            if self.fe("loops"):
+                try:
+                    lp = loops_mod.due(mem, chat_id, self.cfg.get("loops"))
+                except Exception:
+                    lp = None
+
             share = None
             try:
                 if (self.cfg.get("share") or {}).get("enabled", True):
@@ -1943,7 +2016,14 @@ class Companion:
                 want = ""
             hhmm = datetime.now().strftime("%H:%M")
 
-            if share:
+            if lp:
+                thing = str(lp.get("thing") or "").strip()
+                detail = str(lp.get("detail") or "").strip()
+                context = (context + "\n" if context else "") + (
+                    f"你一直惦记着他的这件事：{thing}" + (f"（{detail}）" if detail else "")
+                )
+                ask = loops_mod.ask_instruction(lp, hhmm)
+            elif share:
                 title = str(share.get("title") or "").strip()
                 digest = str(share.get("digest") or "").strip()
                 context = (context + "\n" if context else "") + f"你刚刷到：{title}" + (f"（{digest}）" if digest else "")
@@ -1984,6 +2064,12 @@ class Companion:
                     mem.add_message(chat_id, "assistant", answer)
                 if want_sticker or random.random() < float(p.get("sticker_probability") or 0):
                     await self._send_sticker(ev, chat_id, answer)
+                if lp:
+                    try:
+                        loops_mod.mark_asked(mem, lp, self.cfg.get("loops"))
+                        log.info("追问悬案：%s", lp.get("thing"))
+                    except Exception:
+                        pass
                 if share:
                     try:
                         wander_mod.mark_shared(mem, chat_id, share)
