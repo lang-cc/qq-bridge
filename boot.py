@@ -99,6 +99,15 @@ async def main() -> int:
     try:
         import login_qr
 
+        # SnowLuma 只能「注入已经在跑的 QQ」，QQ 客户端没开的话就会干等扫码等不到。
+        # 之前的表现：日志只写「没等到扫码」，其实屏幕上根本没有二维码窗口。
+        if proto.backend(ROOT) == "snowluma":
+            if proto.ensure_qq(ROOT):
+                log.info("QQ 客户端已拉起（SnowLuma 需要它才注入得了）")
+                time.sleep(6)
+            else:
+                log.warning("找不到 QQ.exe，请手动打开 QQ 再扫码")
+
         if not login_qr.start_napcat():
             log.error("%s 起不来", proto.backend(ROOT))
             return 1

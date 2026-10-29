@@ -164,7 +164,7 @@ async def main() -> None:
                 # 恢复不了任何东西，反而每轮都把用户刚扫上的号又打掉。
                 # 所以这里只做两件事：保证协议端在、保证 QQ 窗口在，然后等人扫。
                 if down > 120 and not restart_tried:
-                    log.warning("掉线 %.0f 秒（SnowLuma 只能扫码，不自动重启 QQ）→ 请到 QQ 窗口扫码", down)
+                    log.warning("掉线 %.0f 秒（SnowLuma 只能扫码）→ 把 QQ 窗口叫出来，等你扫码", down)
                     if not proto.is_up(ROOT):
                         start_napcat()
                     proto.ensure_qq(ROOT)  # 没有 QQ 就把登录窗口叫出来
