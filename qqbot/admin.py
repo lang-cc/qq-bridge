@@ -353,8 +353,10 @@ async def test_tts(autoreply: dict) -> dict:
         return out
 
     size = os.path.getsize(path) if os.path.exists(path) else 0
+    # 以前只回文件名：调用方拿着 voice.silk 去发，协议端在自己的工作目录里找不到，报 ENOENT。
+    # 这里把绝对路径一起给出来，谁要用这条语音都能直接用。
     out.update(ok=True, ms=int((time.monotonic() - t0) * 1000),
-               file=os.path.basename(path), size=size)
+               file=os.path.basename(path), path=os.path.abspath(path), size=size)
     if size < 2000:
         out.update(error="合成出来的音频偏小，可能不太正常", hint=f"{size} 字节，听一下文件对不对")
     return out

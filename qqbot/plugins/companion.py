@@ -1946,6 +1946,52 @@ class Companion:
         log.info("分享抖音[%s]：%s（%s）", persona.get("name"), title[:30], "截图" if shot else "链接")
         return True
 
+    async def _share_wander(self, event, chat_id: str) -> bool:
+        """把「自主上网」刷到的东西甩给他（这就是主动开聊里的「主动分享」）。
+
+        以前只有到点才有机会触发（抖阴/视频还得单独开），手动没法测；
+        现在抽成一条独立的路，后台/接口随时能叫她真分享一次。
+        """
+        _pid, persona, mem = self._ctx(chat_id)
+        item = wander_mod.share_due(mem, chat_id)
+        if not item:
+            log.info("没有可分享的东西（自主上网还没刷到，或都给他看过了）")
+            return False
+        title = str(item.get("title") or "").strip()
+        digest = str(item.get("digest") or "").strip()
+        if not title:
+            return False
+        hhmm = datetime.now().strftime("%H:%M")
+        context = f"你刚刷到：{title}" + (f"（{digest}）" if digest else "")
+        ask = (
+            f"现在是 {hhmm}，你刷到个东西觉得有意思，想甩给他看。"
+            "用你自己的话一两句，说他哪好玩、你笑什么；别念标题，别说「分享」「链接」「信息」，"
+            "就像随手转给朋友。不要问「在吗」。"
+        )
+        ans = await self._chat(
+            [
+                {"role": "system", "content": self._system_prompt_for(chat_id)},
+                {"role": "system", "content": context},
+                {"role": "user", "content": ask},
+            ],
+            temperature=1.0,
+        )
+        if not ans:
+            return False
+        ans = re.sub(r"[\[【](表情|表情包)[\]】]", "", ans).strip()
+        try:
+            await self._send_text(event, ans)
+            mem.add_message(chat_id, "assistant", ans)
+        except Exception as exc:
+            log.warning("主动分享发送失败：%r", exc)
+            return False
+        try:
+            wander_mod.mark_shared(mem, chat_id, item)
+        except Exception as exc:
+            log.debug("标记已分享失败：%r", exc)
+        log.info("主动分享[%s]：%s", persona.get("name"), title[:30])
+        return True
+
     async def _video_loop(self) -> None:
         """定时刷视频，看到有意思的主动发给他。"""
         await asyncio.sleep(420)

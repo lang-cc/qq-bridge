@@ -338,11 +338,15 @@ class HttpApi:
             return _j({"ok": False, "error": repr(exc)})
 
     async def h_admin_share(self, request: web.Request) -> web.Response:
-        """手动触发一次分享：{"chat":"u123","kind":"douyin"}"""
+        """手动触发一次分享：{"chat":"u123","kind":"wander|douyin|video"}
+
+        wander（默认）= 把「自主上网」刷到的东西甩给他，就是主动开聊里的「主动分享」；
+        douyin / video 需要浏览器抓取，得先在自己机器上把 douyin.enabled 打开。
+        """
         self._auth(request)
         data = await self._body(request)
         chat = str(data.get("chat") or "")
-        kind = str(data.get("kind") or "douyin")
+        kind = str(data.get("kind") or "wander")
         if len(chat) < 2 or chat[0] not in ("u", "g"):
             return _j({"ok": False, "error": "chat 形如 u123 或 g456"})
         from .plugins import companion as comp
@@ -355,7 +359,12 @@ class HttpApi:
             user_id=int(chat[1:]) if chat.startswith("u") else None,
         )
         try:
-            ok = await (engine._share_douyin(ev, chat) if kind == "douyin" else engine._share_video(ev, chat))
+            if kind == "douyin":
+                ok = await engine._share_douyin(ev, chat)
+            elif kind == "video":
+                ok = await engine._share_video(ev, chat)
+            else:
+                ok = await engine._share_wander(ev, chat)
         except Exception as exc:
             log.warning("手动分享失败：%r", exc)
             return _j({"ok": False, "error": repr(exc)})
